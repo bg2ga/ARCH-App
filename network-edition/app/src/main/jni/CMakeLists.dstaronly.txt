@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.22)
+project(archdstar C CXX)
+
+file(GLOB_RECURSE DSTAR_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/mbe/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/mbe/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/imbe_vocoder/*.cc)
+
+add_library(archdstar SHARED dstar_vocoder_jni.cpp ${DSTAR_SOURCES})
+target_include_directories(archdstar PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/mbe
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/imbe_vocoder)
+target_compile_options(archdstar PRIVATE -O3)
+target_link_libraries(archdstar log m)

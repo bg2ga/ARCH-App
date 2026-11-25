@@ -1,0 +1,38 @@
+# Android build outputs
+.gradle/
+build/
+**/build/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration and signing material
+local.properties
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem.private
+*.key
+
+# Distributable binaries
+*.apk
+*.aab
+*.idsig
+*-signed.apk
+*-unsigned.apk
+
+# IDE and OS files
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Logs and temporary/backup files
+*.log
+*.bak
+*.bak-*
+*.tmp
+*~*.before-*
