@@ -1,16 +1,17 @@
-﻿# Security Policy
+# 安全政策
 
-## Reporting a vulnerability
+## 报告漏洞
 
-Please do not disclose security vulnerabilities in a public issue. Contact the repository owner through the contact method listed on the GitHub profile.
+请不要在公开 Issue 中披露尚未修复的安全漏洞。请通过 GitHub 个人资料中列出的联系方式联系仓库所有者。
 
-## Repository hygiene
+## 仓库卫生
 
-This repository must not contain:
+本仓库不得包含：
 
-- Android signing keystores or passwords
-- API tokens, private keys, or WireGuard configurations
-- User account exports, radio credentials, or device dumps
-- Locally generated APK/AAB files
+- Android 签名密钥或密码
+- API Token、私钥、VPN/WireGuard 配置
+- 用户账号导出、对讲凭据或设备转储
+- 本地生成的 APK/AAB
+- `local.properties` 或 `keystore.properties`
 
-If a credential is committed, revoke or rotate it first, then remove it from Git history.
+如果发现凭据曾被提交，应先撤销或轮换凭据，再清理 Git 历史。

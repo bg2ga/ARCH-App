@@ -1,25 +1,20 @@
-﻿# Corresponding source
+# 源码说明
 
-This repository contains the corresponding source for the two supported ARCH Android binaries.
+## 对应发布
 
-## Public edition
+- ARCH 协会版：`3.2.161-ASSOCIATION`，versionCode `680`
+- ARCH 公开版：`3.2.144-PUBLIC`，versionCode `662`
+- ARCH 海能达版：`3.3.109-HYTERA-INTERNAL`，versionCode `810`
 
-- Directory: `public-edition/`
-- Package: `cn.arch.dmr.public`
-- Source includes the Android application, Gradle build scripts, JNI bridge, DroidStar-derived MBE/IMBE source, blip25/Opus integration, licenses, attribution and build instructions.
+三个版本由同一套多 flavor Android 源码构建，版本参数定义在 `app/build.gradle`。
 
-## Network edition
+## 正式源码包
 
-- Directory: `network-edition/`
-- Package: `cn.arch.dmr.network`
-- Source includes the Android application, Gradle build scripts, native JNI source and prebuilt libraries, licenses, attribution, regression checks and build instructions.
+- 文件名：`ARCH-Android-source-3.2.161-NRL-20261128.tar.gz`
+- SHA-256：`2f7ebf0f5b94a8ff7af8b40fc78510c191fcfca5d26121e732bfcfadbbea5b65`
 
-## Release practice
+GitHub 分支在正式源码包基础上增加了 README、构建说明、许可证汇总、安全说明和 `.gitignore`，因此 GitHub 自动生成的分支归档哈希会与上述原始压缩包哈希不同。
 
-For each distributed APK, publish the matching source revision at no additional charge. Keep the source commit and release version recorded in the release notes.
+## 不包含的内容
 
-The retired association, Hytera and overseas edition configurations are not part of this repository.
-
-## Native MD380 libraries
-
-The prebuilt MD380 JNI libraries are imported from the ARCH digital-audio integration. Their JNI namespace was normalized to ARCH without changing the native implementation. Both ABI copies are checked for matching symbol length and GNU hash before acceptance. See `tools/README.md`.
+本仓库不包含 APK、AAB、正式签名证书、签名密码、API Token、用户配置或设备数据。

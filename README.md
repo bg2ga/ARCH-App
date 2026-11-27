@@ -1,24 +1,25 @@
-﻿# ARCH 业余无线电 Android App
+# ARCH Android 对讲应用
 
-本仓库只维护两个仍在发布的 ARCH Android 版本：
+ARCH 是一个面向业余无线电和网络对讲的 Android 应用。本仓库包含一套多 flavor 源码，可分别构建当前发布的协会版、公开版和海能达版。
 
-| 目录 | 应用 | 包名 | 当前版本 |
+## 当前版本
+
+| 版本 | Gradle flavor | 应用 ID | versionCode |
 |---|---|---|---|
-| `public-edition/` | ARCH 公开版 | `cn.arch.dmr.public` | `3.2.142-PUBLIC`（versionCode 660） |
-| `network-edition/` | ARCH 公网版 | `cn.arch.dmr.network` | `1.3.30-NETWORK-PUBLIC-291-AUTOSTART-EXIT-95`（versionCode 291） |
+| ARCH 协会版 `3.2.161-ASSOCIATION` | `association` | `cn.arch.dmr` | `680` |
+| ARCH 公开版 `3.2.144-PUBLIC` | `publicEdition` | `cn.arch.dmr.public` | `662` |
+| ARCH 海能达版 `3.3.109-HYTERA-INTERNAL` | `hyteraInternal` | `cn.arch.dmr.hytera` | `810` |
 
-协会版、海能达版和海外版已从本仓库撤下，不再作为本项目支持的发行版本。
+本次发布源码日期：2026-11-28。
 
-## 仓库结构
+## 本版重点
 
-```text
-public-edition/   公开版独立 Android/Gradle 工程
-network-edition/  公网版独立 Android/Gradle 工程
-docs/releases/    两个版本各自的发布说明
-tools/            native JNI 维护工具
-```
-
-两个工程彼此独立，分别构建，不使用同一个 Gradle root project。
+- NRL 服务器目录使用双源自动更新与失败回退。
+- 服务器目录、频道和服务器密码按服务器分别缓存。
+- 心跳、离线判定和自动重连逻辑更新。
+- NRL 软件设备身份与官方 Android 客户端对齐。
+- 重做服务器选择器和频道空状态，改善小屏布局。
+- 未修改 DMR、数字中继、网络对讲、D-Star、SIP、APRS 的主要业务逻辑。
 
 ## 构建
 
@@ -27,26 +28,20 @@ tools/            native JNI 维护工具
 - JDK 17
 - Android SDK 34
 - Android Build Tools 34.0.0
-- Gradle 8.7 或兼容版本
-
-公开版：
+- Gradle 8.7（兼容 Android Gradle Plugin 8.5.2）
 
 ```bash
-cd public-edition
+gradle assembleAssociationRelease
 gradle assemblePublicEditionRelease
+gradle assembleHyteraInternalRelease
 ```
 
-公网版：
+正式签名材料不包含在仓库中。分版本说明见 `docs/`。
 
-```bash
-cd network-edition
-gradle assembleRelease
-```
+## 仓库说明
 
-正式 APK 必须使用 ARCH 发布密钥签名。keystore、密码、`local.properties`、APK/AAB 和构建缓存不得提交到仓库。
+本仓库只发布可公开的源码，不包含 APK、AAB、签名密钥、密码或本地构建配置。第三方组件和专利提示见 `THIRD_PARTY_LICENSES.md` 与 `NOTICE.md`。
 
-## 许可与安全
+## 许可
 
-本仓库按 GNU GPL v3.0 发布。第三方组件、专利提示与分发要求见 `THIRD_PARTY_LICENSES.md`、`NOTICE.md` 和各工程内的许可证文件。
-
-AMBE/AMBE+2 等语音编码算法可能涉及独立专利或商业许可；GPL 不替代这些权利。分发二进制前必须完成相应审查。
+GNU General Public License v3.0 only，详见 `LICENSE`。

@@ -1,4 +1,4 @@
-# ARCH 业余无线电融合中枢
+# ARCH 业余无线电 Android 应用
 
 Copyright (C) 2026 BG2GA / 黑龙江省无线电运动协会
 
