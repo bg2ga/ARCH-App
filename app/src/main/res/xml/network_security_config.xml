@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 默认禁止明文；FMO 4.0 的现有注册端点仍是 HTTP，单独放行。 -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">fmo.hljrsa.cn</domain>
+        <!-- 网络收音机目录中的公开音频流，只有媒体数据，不含账号凭据。 -->
+        <domain includeSubdomains="true">qtfm.cn</domain>
+    </domain-config>
+</network-security-config>

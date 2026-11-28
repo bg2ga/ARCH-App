@@ -376,6 +376,10 @@ public class Prefs {
         return v;
     }
     public String ysfCallsign() { String v=get("ysfCallsign", callsign()); return v == null || v.trim().isEmpty() ? callsign() : v.trim().toUpperCase(java.util.Locale.US); }
+    public int ysfDgId() { int v=i("ysfDgId", 0); return v >= 0 && v <= 127 ? v : 0; }
+    public void setYsfDgId(int dgId) { set("ysfDgId", String.valueOf(Math.max(0, Math.min(127, dgId)))); }
+    public String ysfOptions() { String v=get("ysfOptions", ""); return v.length() > 36 ? v.substring(0, 36) : v; }
+    public void setYsfOptions(String options) { String v=options == null ? "" : options.trim(); if(v.length() > 36) v=v.substring(0,36); set("ysfOptions", v); }
     private String optionalModeCallsign(String key) {
         String v=get(key, "").trim();
         if (!v.isEmpty()) return v.toUpperCase(java.util.Locale.US);
@@ -417,13 +421,45 @@ public class Prefs {
     // ── 音频 ──
     public int rxGainDb() { return clamp(i("rxDb", 0)); }
     public int txGainDb() { return clamp(i("txDb", 0)); }
-    public boolean agc()      { return "1".equals(get("agc", "0")); }
+    public boolean rxAgc() { return "1".equals(get("rxAgc", "1")); }
+    public boolean txAgc() { return "1".equals(get("txAgc", "1")); }
+    public int rxAgcTargetDb() { return clampTarget(i("rxAgcTargetDb", 0)); }
+    public int txAgcTargetDb() { return clampTarget(i("txAgcTargetDb", 0)); }
+    public boolean rxVolumeBoost() { return "1".equals(get("rxVolumeBoost", "0")); }
+    public boolean rxNoiseReduction() { return "1".equals(get("rxNoiseReduction", "0")); }
+    public boolean txNoiseReduction() { return "1".equals(get("txNoiseReduction", "0")); }
+    public String voiceTuning() { return get("voiceTuning", "clarity"); }
+    public String listeningTuning() { return get("listeningTuning", "flat"); }
+
+    /** Legacy master switch retained for old callers. */
+    public boolean agc()      { return rxAgc() && txAgc(); }
     /** FMO/模拟互联语音增强（系统降噪+AGC+回声消除），默认开启。 */
     public boolean fmoEnhance(){ return "1".equals(get("fmoEnhance", "1")); }
-    public boolean denoise()  { return "1".equals(get("denoise", "0")); }
+    public boolean denoise()  { return rxNoiseReduction(); }
     public boolean callMute() { return "1".equals(get("callMute", "0")); }
     public boolean pttTone() { return "1".equals(get("pttTone", "1")); }
     private static int clamp(int v) { return v < -30 ? -30 : (v > 30 ? 30 : v); }
+    private static int clampTarget(int v) { return v < -12 ? -12 : (v > 12 ? 12 : v); }
+
+    public void resetAudioDefaults() {
+        set("rxDb", "0");
+        set("txDb", "0");
+        set("rxAgc", "1");
+        set("txAgc", "1");
+        set("rxAgcTargetDb", "0");
+        set("txAgcTargetDb", "0");
+        set("rxVolumeBoost", "0");
+        set("rxNoiseReduction", "0");
+        set("txNoiseReduction", "0");
+        set("voiceTuning", "clarity");
+        set("listeningTuning", "flat");
+        set("fmoEnhance", "1");
+        set("callMute", "0");
+        set("pttTone", "1");
+        // Keep the legacy switch synchronized for older callers.
+        set("agc", "1");
+        set("denoise", "0");
+    }
 
     public String audioRoute() { return get("audioRoute", "speaker"); }
     public boolean isEarpiece() { return "earpiece".equals(audioRoute()); }
@@ -433,6 +469,13 @@ public class Prefs {
     public boolean callsignEnhanced() { return "1".equals(get("callsignEnhanced", "0")); }
     public void setCallsignEnhanced(boolean on) { set("callsignEnhanced", on ? "1" : "0"); }
     public boolean userExited() { return "1".equals(get("userExited", "0")); }
+    public String stableDeviceId() {
+        String value = get("stableDeviceId", "");
+        if (value != null && !value.trim().isEmpty()) return value.trim();
+        value = "arch-" + java.util.UUID.randomUUID().toString().replace("-", "");
+        setSync("stableDeviceId", value);
+        return value;
+    }
     public void setUserExited(boolean exited) { setSync("userExited", exited ? "1" : "0"); }
     public boolean showNotification() { return "1".equals(get("showNotify", "1")); }
     public boolean overlayPtt() { return "1".equals(get("overlayPtt", "0")); }
@@ -635,7 +678,7 @@ public class Prefs {
     public void extBroadcastAdd(String type, String action){
         String a = action == null ? "" : action.trim();
         if (a.length() == 0) return;
-        String ty = type == null ? "T" : type.trim().toUpperCase();
+        String ty = type == null ? "T" : type.trim().toUpperCase(java.util.Locale.US);
         if (!"D".equals(ty) && !"U".equals(ty) && !"T".equals(ty)) ty = "T";
         java.util.ArrayList<String> list = new java.util.ArrayList<>();
         String cur = extBroadcastMap();

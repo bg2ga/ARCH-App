@@ -134,6 +134,7 @@ public class ArchKeepAliveService extends Service {
         return START_STICKY;
     }
 
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerPttBroadcastReceiver() {
         try {
             if (pttBroadcastReceiver != null) {

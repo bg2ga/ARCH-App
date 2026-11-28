@@ -82,12 +82,23 @@ public final class NxdnClient {
         synchronized(rxLock){rxCodeQueue.clear();rxPcmQueue.clear();}
         synchronized(codecLock){codec.reset();}
         tx=true;rxEnded=false;
+        synchronized(txLock){ send(buildFrame(false)); } // Send the call header immediately on PTT
         log("NXDN 开始发射");
     }
 
     public void stopTx(){
         boolean was=tx;tx=false;
-        if(was&&isRunning())send(buildFrame(true));
+        if(was&&isRunning()){
+            synchronized(txLock){
+                if(txCodeLen>0){
+                    byte[] silence={ (byte)0xF8,0x01,(byte)0xA9,(byte)0x9F,(byte)0x8C,(byte)0xE0,(byte)0x80 };
+                    while(txCodeLen<28){System.arraycopy(silence,0,txCode,txCodeLen,7);txCodeLen+=7;}
+                    send(buildFrame(false));
+                    txCodeLen=0;
+                }
+            }
+            send(buildFrame(true));
+        }
         synchronized(txLock){txCodeLen=0;txCnt=0;}
         log("NXDN 停止发射");
     }
@@ -106,7 +117,7 @@ public final class NxdnClient {
     }
 
     private void pingLoop(){
-        while(running){try{Thread.sleep(1000L);}catch(InterruptedException e){return;}if(running)send(pingPacket(false));}
+        while(running){try{Thread.sleep(10000L);}catch(InterruptedException e){return;}if(running)send(pingPacket(false));}
     }
 
     private void rxLoop(){
@@ -123,11 +134,13 @@ public final class NxdnClient {
 
     private void handleRx(byte[] b,int len){
         if(len==17){
-            if(!connected){connected=true;state(STATE_CONNECTED,"已连接 NXDN");log("NXDN 直连成功");}
+            if(b[0]!='N'||b[1]!='X'||b[2]!='D'||b[3]!='N'||b[4]!='P')return;
+            if(!connected){connected=true;state(STATE_CONNECTED,"已连接 NXDN");log("NXDN Poll 应答，反射器登录成功");}
             return;
         }
         if(len!=43)return;
         if(b[0]!='N'||b[1]!='X'||b[2]!='D'||b[3]!='N'||b[4]!='D')return;
+        if((b[9]&0x02)!=0)return;
         rxSrc=u16(b,5);rxDst=u16(b,7);
         if((b[9]&0x08)==0){Listener sl=listener;if(sl!=null)try{sl.onSignal(rxSrc,rxDst);}catch(Throwable t){log("NXDN 信号处理异常: "+t);}}
         int fct=getLichFct(b[10]&0xFF);

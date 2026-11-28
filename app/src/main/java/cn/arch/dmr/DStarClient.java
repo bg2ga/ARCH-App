@@ -11,6 +11,7 @@ import java.util.Locale;
 
 /** Direct DCS/XLX D-Star client. Audio is 8 kHz/20 ms PCM. */
 public final class DStarClient {
+    private static final float DSTAR_ENCODER_TARGET = 0.10f;
     public interface Listener {
         void onState(int state, String message);
         void onVoice(String callsign, short[] pcm160);
@@ -145,6 +146,7 @@ public final class DStarClient {
     }
 
     public void startTx() {
+        dstarTxLeveler.reset();
         DStarFusionClient f = fusion;
         if (f != null) { f.startTx(); return; }
         if (!isRunning() || tx) return;
@@ -160,6 +162,7 @@ public final class DStarClient {
     }
 
     public void stopTx() {
+        dstarTxLeveler.reset();
         DStarFusionClient f = fusion;
         if (f != null) { f.stopTx(); return; }
         if (!isRunning()) { tx = false; return; }
@@ -172,12 +175,44 @@ public final class DStarClient {
     }
 
     public void sendPcm(short[] pcm160) {
+        if (pcm160 == null || pcm160.length != 160) return;
+        short[] calibrated = dstarTxLeveler.process(pcm160);
         DStarFusionClient f = fusion;
-        if (f != null) { f.sendPcm(pcm160); return; }
-        if (!tx || !isRunning() || pcm160 == null || pcm160.length != 160) return;
+        if (f != null) { f.sendPcm(calibrated); return; }
+        if (!tx || !isRunning()) return;
         byte[] ambe = new byte[9];
-        if (vocoder.encode(pcm160, ambe)) sendVoiceFrame(ambe, false);
+        if (vocoder.encode(calibrated, ambe)) sendVoiceFrame(ambe, false);
     }
+
+    private static final class DStarTxLeveler {
+        private float gain = 0.18f;
+
+        synchronized void reset() {
+            gain = 0.18f;
+        }
+
+        synchronized short[] process(short[] pcm) {
+            int peak = 0;
+            for (short sample : pcm) {
+                int value = sample < 0 ? -sample : sample;
+                if (value > peak) peak = value;
+            }
+            float level = peak / 32768.0f;
+            if (level > 0.004f) {
+                float wanted = DSTAR_ENCODER_TARGET / level;
+                wanted = Math.max(0.08f, Math.min(2.5f, wanted));
+                gain += (wanted - gain) * (wanted < gain ? 0.42f : 0.08f);
+            }
+            short[] out = new short[pcm.length];
+            for (int i = 0; i < pcm.length; i++) {
+                int value = Math.round(pcm[i] * gain);
+                out[i] = (short)Math.max(-32768, Math.min(32767, value));
+            }
+            return out;
+        }
+    }
+
+    private final DStarTxLeveler dstarTxLeveler = new DStarTxLeveler();
 
     public void stop() {
         DStarFusionClient f = fusion;

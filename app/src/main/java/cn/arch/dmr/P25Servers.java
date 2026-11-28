@@ -109,6 +109,10 @@ final class P25Servers {
     static String name(int i) { return ALL[clamp(i)][1]; }
     static String host(int i) { return ALL[clamp(i)][2]; }
     static int port(int i) { try { return Integer.parseInt(ALL[clamp(i)][3]); } catch (Throwable ignored) { return 41000; } }
+    static int designator(int i) {
+        try { return Integer.parseInt(id(i).replaceFirst("(?i)^P25-", "")); }
+        catch (Throwable ignored) { return 0; }
+    }
     static int indexOf(String id) {
         if (id != null) for (int i = 0; i < ALL.length; i++) if (ALL[i][0].equalsIgnoreCase(id)) return i;
         return 0;

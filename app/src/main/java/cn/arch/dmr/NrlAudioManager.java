@@ -37,6 +37,7 @@ final class NrlAudioManager {
     private volatile boolean agcEnabled = false;
     private final DigitalAgc rxAgc = new DigitalAgc();
     private final DigitalAgc txAgc = new DigitalAgc();
+    private final VoiceDsp voiceDsp = new VoiceDsp();
     private AutomaticGainControl agc;
     private NoiseSuppressor ns;
     private AcousticEchoCanceler aec;
@@ -50,6 +51,7 @@ final class NrlAudioManager {
 
     synchronized boolean startPlayback() {
         if (playRun && track != null && playThread != null && playThread.isAlive()) return true;
+        voiceDsp.resetRx();
         stopPlayback();
         try {
             int min = AudioTrack.getMinBufferSize(SR, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -66,8 +68,7 @@ final class NrlAudioManager {
                     try {
                         short[] pcm = playQueue.take();
                         if (!playRun || track != t) break;
-                        applyGain(pcm, rxGain);
-                        if (agcEnabled) rxAgc.process(pcm);
+                        voiceDsp.processRx(pcm, SR);
                         AudioLevelBus.pushRx(pcm);
                         t.write(pcm, 0, pcm.length);
                     } catch (InterruptedException e) {
@@ -127,8 +128,7 @@ final class NrlAudioManager {
                         MicCb callback = micCb;
                         if (n == FRAME && callback != null && micRun && record == r) {
                             short[] frame = pcm.clone();
-                            applyGain(frame, txGain);
-                            if (agcEnabled) txAgc.process(frame);
+                            voiceDsp.processTx(frame, SR);
                             AudioLevelBus.pushTx(frame);
                             callback.onFrame(frame);
                         }
@@ -187,9 +187,10 @@ final class NrlAudioManager {
         if (t != null) try { t.setVolume(mute ? 0f : 1f); } catch (Throwable ignored) {}
     }
 
+    void setAudioProfile(AudioProfile profile) { voiceDsp.setProfile(profile); }
     void setGains(float rx, float tx) {
         rxGain = Math.max(0.05f, Math.min(8f, rx));
-        txGain = Math.max(0.05f, Math.min(8f, tx));
+        txGain = Math.max(0.03f, Math.min(8f, tx));
     }
 
     void setAgc(boolean on) {
@@ -200,10 +201,6 @@ final class NrlAudioManager {
 
     private void enableEffects(int session) {
         try {
-            if (AutomaticGainControl.isAvailable()) {
-                agc = AutomaticGainControl.create(session);
-                if (agc != null) agc.setEnabled(true);
-            }
             if (NoiseSuppressor.isAvailable()) {
                 ns = NoiseSuppressor.create(session);
                 if (ns != null) ns.setEnabled(true);

@@ -31,6 +31,10 @@ public class ArchPttBroadcastReceiver extends BroadcastReceiver {
 
     @Override public void onReceive(Context context, Intent intent) {
         if (intent == null) return;
+        if (!isTrustedVendorSender()) {
+            android.util.Log.w("ARCH", "拒绝来源不可信的厂商 PTT 广播: uid=" + safeSentUid());
+            return;
+        }
         String action = intent.getAction();
         if (action == null || action.length() == 0) return;
 
@@ -61,6 +65,32 @@ public class ArchPttBroadcastReceiver extends BroadcastReceiver {
         } else if (ArchPttBroadcast.TYPE_UP.equals(type)) {
             stopTx("bc-up");
         }
+    }
+
+    private int safeSentUid() {
+        if (Build.VERSION.SDK_INT < 34) return -1;
+        try { return getSentFromUid(); } catch (Throwable ignored) { return -1; }
+    }
+
+    /** Android 14+ 才能可靠取得广播发送 UID；旧系统继续兼容厂商私有 ROM。 */
+    private boolean isTrustedVendorSender() {
+        if (Build.VERSION.SDK_INT < 34) return true;
+        int uid;
+        try { uid = getSentFromUid(); } catch (Throwable ignored) { return false; }
+        if (uid == android.os.Process.myUid()) return true;
+        if (uid == android.os.Process.SYSTEM_UID) return true;
+        String[] packages = appContext.getPackageManager().getPackagesForUid(uid);
+        if (packages == null) return false;
+        for (String pkg : packages) {
+            try {
+                android.content.pm.ApplicationInfo ai = appContext.getPackageManager()
+                        .getApplicationInfo(pkg, 0);
+                if ((ai.flags & (android.content.pm.ApplicationInfo.FLAG_SYSTEM
+                        | android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0)
+                    return true;
+            } catch (Throwable ignored) {}
+        }
+        return false;
     }
 
     private String extraSummary(Intent intent) {
@@ -149,9 +179,7 @@ public class ArchPttBroadcastReceiver extends BroadcastReceiver {
         if (ArchAppState.hwTx) return;
         try { HyteraPdc760Bridge.noteActivityPttDown(appContext); } catch (Throwable ignored) {}
         ArchAppState.hwTx = true;
-        boolean delivered = false;
-        try { delivered = MainActivity.dispatchHardwarePtt(true); } catch (Throwable ignored) {}
-        if (!delivered) send(ArchOverlayPttService.ACTION_DOWN);
+        try { MainActivity.dispatchHardwarePtt(true); } catch (Throwable ignored) {}
         try {
             handler.removeCallbacks(autoStop);
             handler.postDelayed(autoStop, Math.max(10, p.pttTimeout()) * 1000L);
@@ -163,16 +191,7 @@ public class ArchPttBroadcastReceiver extends BroadcastReceiver {
         if (!ArchAppState.hwTx) return;
         ArchAppState.hwTx = false;
         try { handler.removeCallbacks(autoStop); } catch (Throwable ignored) {}
-        boolean delivered = false;
-        try { delivered = MainActivity.dispatchHardwarePtt(false); } catch (Throwable ignored) {}
-        if (!delivered) send(ArchOverlayPttService.ACTION_UP);
-    }
-
-    private void send(String action) {
-        try {
-            Intent i = new Intent(action).setPackage(appContext.getPackageName());
-            appContext.sendBroadcast(i);
-        } catch (Throwable ignored) {}
+        try { MainActivity.dispatchHardwarePtt(false); } catch (Throwable ignored) {}
     }
 
     public void release() {

@@ -26,6 +26,7 @@ public class AudioEngine {
     /** FMO / 模拟互联：8kHz VOICE_COMMUNICATION + 系统 NS/AGC/AEC（对齐参考 APP）。 */
     private static final int FRONT_FMO = 4;
     private static final int FRONT_DSTAR_PDC = 5;
+    private static final int FRONT_VOICE8K = 6;
     private AudioRecord rec; private AudioTrack trk;
     private AudioTrack dstarTrk;
     private HighQualityResampler dstarResampler;
@@ -34,20 +35,18 @@ public class AudioEngine {
     private final DigitalAgc micAgc = new DigitalAgc();
     private AutomaticGainControl agcFx; private NoiseSuppressor nsFx; private AcousticEchoCanceler aecFx;
     private Thread th; private volatile boolean run; private volatile boolean micRun;
-    private volatile boolean dstarRawMic;
     private volatile MicCb micCb;
     private volatile MicRateCb micRateCb;
 
  /** 线性增益（由 dB 换算） */
     private volatile float micGain = 1.0f, spkGain = 1.0f;
     private volatile boolean agc = false, denoise = false;
+    private final VoiceDsp voiceDsp = new VoiceDsp();
     /** FMO 语音增强：系统降噪+AGC+AEC（默认开，对齐参考 APP）。 */
     private volatile boolean voiceEffects = true;
     private static final float TX_LIMIT_PEAK = 24000f;
     private static final float RX_LIMIT_PEAK = 30000f;
     private static final float LIMIT_RELEASE = 0.02f;
-    /** DMR/BM 接收专用补偿：额外 2.5 倍，约 +8 dB。 */
-    private static final float DMR_RX_EXTRA_GAIN = 2.5f;
     private volatile float txLimitGain = 1f;
     private volatile float rxLimitGain = 1f;
 
@@ -62,6 +61,7 @@ public class AudioEngine {
  /** 只启动扬声器播放；麦克风必须等到按下 PTT 时才启动。 */
     public synchronized boolean start() {
         if (run && trk != null) return true;
+        voiceDsp.resetRx();
         try {
             if (trk != null) { trk.release(); trk = null; }
             int minOut = AudioTrack.getMinBufferSize(SR,
@@ -115,15 +115,7 @@ public class AudioEngine {
         if (pcm == null || pcm.length == 0) return;
         if (dstarTrk == null && !startDstarTrack()) return;
         try {
-            short[] speech = java.util.Arrays.copyOf(pcm, pcm.length);
-            // D-Star AGC disabled: the server and codec already provide standard level.
-            float g = spkGain;
-            if (g != 1.0f) {
-                for (int i = 0; i < speech.length; i++) {
-                    int v = Math.round(speech[i] * g);
-                    speech[i] = (short)(v < -32768 ? -32768 : (v > 32767 ? 32767 : v));
-                }
-            }
+            short[] speech = voiceDsp.processRx(pcm, SR);
             short[] out = dstarResampler == null ? speech : dstarResampler.process(speech);
             if (out == null || out.length == 0 || dstarTrk == null) return;
             AudioLevelBus.pushRx(out);
@@ -152,54 +144,54 @@ public class AudioEngine {
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    public synchronized void startMic(final MicCb cb) {
-        startMicInternal(cb, null, MediaRecorder.AudioSource.VOICE_COMMUNICATION, FRONT_NONE, false);
+    public synchronized boolean startMic(final MicCb cb) {
+        return startMicInternal(cb, null, MediaRecorder.AudioSource.VOICE_COMMUNICATION, FRONT_NONE, false);
     }
 
  /** FMO/模拟互联：8kHz VOICE_COMMUNICATION，可选系统 NS+AGC+AEC。 */
     @android.annotation.SuppressLint("MissingPermission")
-    public synchronized void startFmoMic(final MicCb cb, final boolean enhance) {
-        startMicInternal(cb, null, MediaRecorder.AudioSource.VOICE_COMMUNICATION, FRONT_FMO, enhance);
+    public synchronized boolean startFmoMic(final MicCb cb, final boolean enhance) {
+        return startMicInternal(cb, null, MediaRecorder.AudioSource.VOICE_COMMUNICATION, FRONT_FMO, enhance);
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    public synchronized void startYsfMic(final MicCb cb) {
-        startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_PCM8K);
+    public synchronized boolean startYsfMic(final MicCb cb) {
+        return startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_VOICE8K);
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    public synchronized void startDstarMic(final MicCb cb) {
-        startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_DSTAR);
+    public synchronized boolean startDstarMic(final MicCb cb) {
+        return startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_DSTAR);
     }
 
     /** PDC760/PDC hardware: use the POC main-microphone route and native 8 kHz capture for D-Star. */
     @android.annotation.SuppressLint("MissingPermission")
-    public synchronized void startDstarPdcMic(final MicCb cb) {
-        startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_DSTAR_PDC);
+    public synchronized boolean startDstarPdcMic(final MicCb cb) {
+        return startMicInternal(cb, MediaRecorder.AudioSource.MIC, FRONT_DSTAR_PDC);
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private void startMicInternal(final MicCb cb, final int source, final int frontEnd) {
-        startMicInternal(cb, null, source, frontEnd, false);
+    private boolean startMicInternal(final MicCb cb, final int source, final int frontEnd) {
+        return startMicInternal(cb, null, source, frontEnd, false);
     }
     @android.annotation.SuppressLint("MissingPermission")
-    private void startMicInternal(final MicCb cb, final MicRateCb rateCb, final int source, final int frontEnd) {
-        startMicInternal(cb, rateCb, source, frontEnd, false);
+    private boolean startMicInternal(final MicCb cb, final MicRateCb rateCb, final int source, final int frontEnd) {
+        return startMicInternal(cb, rateCb, source, frontEnd, false);
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private void startMicInternal(final MicCb cb, final MicRateCb rateCb, final int source, final int frontEnd, final boolean wantEffects) {
+    private boolean startMicInternal(final MicCb cb, final MicRateCb rateCb, final int source, final int frontEnd, final boolean wantEffects) {
         micCb = cb;
-        dstarRawMic = frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC;
         micRateCb = rateCb;
-        android.util.Log.i("ARCH", "AudioEngine startMic cb=" + (cb != null) + " rateCb=" + (rateCb != null) + " frontEnd=" + frontEnd);
-        if (cb == null && rateCb == null) { stopMic(); return; }
-        if (!start()) { android.util.Log.e("ARCH", "AudioEngine startMic: speaker start failed"); return; }
-        if (micRun && rec != null) return;
+        voiceDsp.resetTx();
+        android.util.Log.i("ARCH", "AudioEngine startMic cb=" + (cb != null) + " rateCb=" + (rateCb != null) + " frontEnd=" + frontEnd + " micGain=" + micGain + " agc=" + agc);
+        if (cb == null && rateCb == null) { stopMic(); return true; }
+        if (!start()) { android.util.Log.e("ARCH", "AudioEngine startMic: speaker start failed"); return false; }
+        if (micRun && rec != null) return true;
         try {
             final int captureRate;
             AudioRecord candidate = null;
-            if (frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC || frontEnd == FRONT_FMO) {
+            if (frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC || frontEnd == FRONT_FMO || frontEnd == FRONT_VOICE8K) {
                 // DroidStar/DCS uses native 8 kHz capture. PDC uses its POC HAL route, but the codec path stays 8 kHz; only use 48 kHz if 8 kHz is unsupported.
                 // DSTAR/FMO are 8 kHz speech paths: prefer 8 kHz capture to avoid feeding 48 kHz PCM into the 8 kHz Opus encoder.
                 int min8 = AudioRecord.getMinBufferSize(SR,
@@ -246,9 +238,9 @@ public class AudioEngine {
             }
             if (rec.getState() != AudioRecord.STATE_INITIALIZED) throw new IllegalStateException("麦克风未初始化");
             final boolean dstarCapture = frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC;
-            final boolean fx = (frontEnd == FRONT_FMO) ? (wantEffects && voiceEffects) : (frontEnd != FRONT_NONE && !dstarCapture);
-            // D-Star uses the system noise suppressor only. Keep AGC/AEC off so the
-            // DroidStar-compatible 8 kHz/160-sample transmit path is not modified.
+            final boolean fx = frontEnd == FRONT_FMO && wantEffects && voiceEffects;
+            // Voice modes use the application DSP below. The platform effects are
+            // retained only for the legacy analog path.
             final boolean dstarNs = dstarCapture;
             if (frontEnd != FRONT_NONE) {
                 if (Build.VERSION.SDK_INT >= 29) {
@@ -263,7 +255,8 @@ public class AudioEngine {
                     }
                     if (AutomaticGainControl.isAvailable()) {
                         agcFx = AutomaticGainControl.create(sid);
-                        if (agcFx != null) agcFx.setEnabled(fx && !dstarNs);
+                        // Level control is centralized in VoiceDsp for every voice mode.
+                        if (agcFx != null) agcFx.setEnabled(false);
                     }
                     if (AcousticEchoCanceler.isAvailable()) {
                         aecFx = AcousticEchoCanceler.create(sid);
@@ -274,6 +267,8 @@ public class AudioEngine {
                 }
             }
             rec.startRecording();
+            if (rec.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+                throw new IllegalStateException("麦克风未进入录音状态");
             micRun = true;
             android.util.Log.i("ARCH", "AudioEngine AudioRecord started rate=" + captureRate + " state=" + rec.getState() + " recording=" + rec.getRecordingState());
             final int inputFrame = captureRate == CAPTURE_SR ? CAPTURE_FRAME : (captureRate == 24000 ? 480 : 160);
@@ -281,9 +276,12 @@ public class AudioEngine {
                 try { android.os.Process.setThreadPriority(-19); } catch (Throwable ignored) {}
                 short[] in = new short[inputFrame];
                 short[] out8 = new short[160];
-                boolean usePcmFrontEnd = (frontEnd == FRONT_PCM8K) || ((frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC || frontEnd == FRONT_FMO) && captureRate == CAPTURE_SR);
+                boolean usePcmFrontEnd = frontEnd == FRONT_PCM8K;
                 PcmFrontEnd pcm8k = usePcmFrontEnd ? new PcmFrontEnd() : null;
-                final HighQualityResampler captureResampler = (frontEnd == FRONT_DSTAR_PDC && captureRate != SR) ? new HighQualityResampler(captureRate, SR) : null;
+                final HighQualityResampler captureResampler =
+                        (frontEnd == FRONT_DSTAR || frontEnd == FRONT_DSTAR_PDC
+                                || frontEnd == FRONT_FMO || frontEnd == FRONT_VOICE8K)
+                                && captureRate != SR ? new HighQualityResampler(captureRate, SR) : null;
                 int outAcc = 0;
                 boolean first = true;
                 try {
@@ -298,7 +296,7 @@ public class AudioEngine {
                                     if (first) { first = false; android.util.Log.i("ARCH", "AudioEngine mic first 48k frame"); }
                                     if (usePcmFrontEnd && pcm8k != null) {
                                         short[] frame = (n == in.length) ? pcm8k.process(in, 48000) : pcm8k.process(java.util.Arrays.copyOf(in, n), 48000);
-                                        if (frame != null) emitMicFrame(call, rateCall, frame, captureRate);
+                                        if (frame != null) emitMicFrame(call, rateCall, frame, SR);
                                     } else {
                                         if (n == in.length) emitMicFrame(call, rateCall, in, captureRate);
                                         else emitMicFrame(call, rateCall, java.util.Arrays.copyOf(in, n), captureRate);
@@ -310,7 +308,7 @@ public class AudioEngine {
                                             out8[outAcc++] = frame[k];
                                             if (outAcc == 160) {
                                                 if (first) { first = false; android.util.Log.i("ARCH", "AudioEngine mic first 24k->8k frame"); }
-                                                emitMicFrame(call, rateCall, out8, captureRate);
+                                                emitMicFrame(call, rateCall, out8, SR);
                                                 outAcc = 0;
                                             }
                                         }
@@ -320,7 +318,7 @@ public class AudioEngine {
                                         out8[outAcc++] = in[k];
                                         if (outAcc == 160) {
                                             if (first) { first = false; android.util.Log.i("ARCH", "AudioEngine mic first 8k frame"); }
-                                            emitMicFrame(call, rateCall, out8, captureRate);
+                                            emitMicFrame(call, rateCall, out8, SR);
                                             outAcc = 0;
                                         }
                                     }
@@ -336,36 +334,25 @@ public class AudioEngine {
                 }
             }, "mic");
             th.start();
+            return true;
         } catch (Throwable t) {
             android.util.Log.e("ARCH", "AudioEngine microphone create failed", t);
             stopMic();
+            return false;
         }
     }
 
     private void emitMicFrame(MicCb call, MicRateCb rateCall, short[] pcm, int sampleRate) {
-        short[] frame = pcm;
-        if (!dstarRawMic) {
-            float gain = micGain;
-            if (frame != null && (gain != 1.0f || agc)) {
-                frame = frame.clone();
-                for (int i = 0; i < frame.length; i++) {
-                    int v = Math.round(frame[i] * gain);
-                    frame[i] = (short)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-                }
-            }
-            if (frame != null && agc) micAgc.process(frame);
-        }
+        short[] frame = voiceDsp.processTx(pcm, sampleRate);
         AudioLevelBus.pushTx(frame);
         if (rateCall != null) rateCall.onFrame(frame, sampleRate);
         else if (call != null) call.onFrame(frame);
     }
 
-    private void releaseRecordAsync(final AudioRecord r) {
+    private void releaseRecord(final AudioRecord r) {
         if (r == null) return;
-        new Thread(() -> {
-            try { r.stop(); } catch (Throwable ignored) {}
-            try { r.release(); } catch (Throwable ignored) {}
-        }, "audio-record-release").start();
+        try { r.stop(); } catch (Throwable ignored) {}
+        try { r.release(); } catch (Throwable ignored) {}
     }
 
     private void releaseTrackAsync(final AudioTrack t) {
@@ -380,15 +367,19 @@ public class AudioEngine {
         micCb = null;
         micRateCb = null;
         micRun = false;
-        dstarRawMic = false;
         txLimitGain = 1f;
         AudioRecord r = rec;
         rec = null;
         Thread t = th;
         th = null;
-        if (t != null) t.interrupt();
+        if (t != null) {
+            t.interrupt();
+            if (Thread.currentThread() != t) {
+                try { t.join(300); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            }
+        }
         releaseEffectsAsync();
-        releaseRecordAsync(r);
+        releaseRecord(r);
     }
 
     private void releaseEffectsAsync() {
@@ -431,29 +422,16 @@ public class AudioEngine {
  /** 播放一路 8k PCM：按需做降噪 / AGC / 固定增益。 */
     public void play(short[] pcm) { play(pcm, 1.0f); }
 
-    /** DMR/BM 接收专用：保留用户接收音量、AGC 和降噪，再额外补偿 2.5 倍。 */
-    public void playDmr(short[] pcm) { play(pcm, DMR_RX_EXTRA_GAIN); }
+    /** Compatibility entry point for DMR/HBP; all modes use the same RX DSP. */
+    public void playDmr(short[] pcm) { play(pcm, 1.0f); }
 
     public synchronized void play(short[] pcm, float extraGain) {
         AudioTrack t = trk;
         if (!run || t == null || pcm == null || pcm.length == 0) return;
-        if (!denoise && !agc && spkGain == 1.0f && extraGain == 1.0f) {
-            AudioLevelBus.pushRx(pcm);
-            try { t.write(pcm, 0, pcm.length); } catch (Throwable ignored) {}
-            return;
+        short[] o = voiceDsp.processRx(pcm, SR);
+        if (extraGain != 1.0f) {
+            for (int i = 0; i < o.length; i++) o[i] = (short)Math.max(-32768, Math.min(32767, Math.round(o[i] * extraGain)));
         }
-        short[] o = new short[pcm.length];
-        float g = spkGain;
-        for (int i = 0; i < pcm.length; i++) {
-            float x = pcm[i];
-            if (denoise) x = denoiseSample(x, i);
-            if (agc) x = agcSample(x);
-            else if (g != 1.0f) x = x * g;
-            if (extraGain != 1.0f) x = x * extraGain;
-            if (x > 32767f) x = 32767f; else if (x < -32768f) x = -32768f;
-            o[i] = (short) x;
-        }
-        softLimit(o);
         AudioLevelBus.pushRx(o);
         try { t.write(o, 0, o.length); } catch (Throwable ignored) {}
     }
@@ -462,8 +440,7 @@ public class AudioEngine {
     public synchronized void playRaw(short[] pcm) {
         AudioTrack t = trk;
         if (!run || t == null || pcm == null || pcm.length == 0) return;
-        short[] out = applySpkGain(pcm);
-        if (agc) { if (out == pcm) out = pcm.clone(); rawAgc.process(out); }
+        short[] out = voiceDsp.processRx(pcm, SR);
         AudioLevelBus.pushRx(out);
         try { t.write(out, 0, out.length); } catch (Throwable ignored) {}
     }
@@ -475,8 +452,7 @@ public class AudioEngine {
         AudioTrack t = trk;
         if (!run || t == null) { if (!start()) return; t = trk; }
         if (t == null) return;
-        short[] out = applySpkGain(pcm);
-        if (agc) { if (out == pcm) out = pcm.clone(); rawAgc.process(out); }
+        short[] out = voiceDsp.processRx(pcm, SR);
         AudioLevelBus.pushRx(out);
         try { t.write(out, 0, out.length); } catch (Throwable ignored) {}
     }
@@ -550,6 +526,7 @@ public class AudioEngine {
         return (float) Math.pow(10.0, db / 20.0);
     }
 
+    public void setAudioProfile(AudioProfile profile) { voiceDsp.setProfile(profile); }
     public void setRxGainDb(int db) { spkGain = dbToLinear(db); }
     public void setTxGainDb(int db) { micGain = dbToLinear(db); }
     public void setAgc(boolean on) { agc = on; agcEnv = 0f; agcGain = 1f; rawAgc.reset(); micAgc.reset(); dstarAgc.reset(); }

@@ -1295,7 +1295,7 @@ void encode_ambe(const IMBE_PARAM *imbe_param, int b[], mbe_parms*cur_mp, mbe_pa
 		}
 
 		for (int i = 0; i < 160; i++){
-			float sample = (*m_audio_out_temp_buf_p) * 0.25f;
+			float sample = (*m_audio_out_temp_buf_p);
 			if (sample > static_cast<float>(32760)){
 				sample = static_cast<float>(32760);
 			}

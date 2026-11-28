@@ -23,8 +23,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.provider.Settings;
@@ -42,6 +42,7 @@ import android.view.ViewGroup;
 import android.widget.*;
 
 /** ARCH —— 业余无线电融合中枢（DMR） */
+@android.annotation.SuppressLint("UnsafeOptInUsageError")
 public class MainActivity extends Activity implements FmoClient.Listener {
 
     // 主题色（由 applyThemeColors 在 onCreate 里按设置切换）
@@ -59,6 +60,9 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     /** 海能达桌面会在 Home 后立刻销毁 Activity；PTT 后台模式保留这台无窗口运行时。 */
     private static volatile MainActivity hardwarePttActivity;
     private boolean backgroundRuntimeRetained;
+    private BroadcastReceiver overlayPttReceiver;
+    private static final String INTERNAL_PTT_PERMISSION =
+            BuildConfig.APPLICATION_ID + ".permission.INTERNAL_PTT";
     private boolean runtimeShutdown;
     private boolean completeExitInProgress;
 
@@ -243,7 +247,6 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     private String duplexPeerName = "";
     private AlertDialog duplexDialog;
     private NokiaRingtone duplexRingtone;
-    private BroadcastReceiver overlayPttReceiver;
     private long lastHyteraKnobAt;
     private Runnable hardwarePttRetryTask;
     private int hardwarePttRetryCount;
@@ -843,21 +846,26 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     }
 
     private void applyAudioPrefs() {
-        if (audio != null) {
-            audio.setRxGainDb(p.rxGainDb());
-            audio.setTxGainDb(p.txGainDb());
-            audio.setAgc(p.agc());
-            audio.setDenoise(p.denoise());
-        }
-        if (hqAudio != null) {
-            hqAudio.setRxGain(AudioEngine.dbToLinear(p.rxGainDb()));
-            hqAudio.setTxGain(AudioEngine.dbToLinear(p.txGainDb()));
-            hqAudio.setAgc(p.agc());
-        }
-        if (nrlAudio != null) {
-            nrlAudio.setGains(2.5f * AudioEngine.dbToLinear(p.rxGainDb()), AudioEngine.dbToLinear(p.txGainDb()));
-            nrlAudio.setAgc(p.agc());
-        }
+        AudioProfile profile = AudioProfile.fromPrefs(p);
+        if (audio != null) audio.setAudioProfile(profile);
+        if (hqAudio != null) hqAudio.setAudioProfile(profile);
+        if (nrlAudio != null) nrlAudio.setAudioProfile(profile);
+    }
+
+    private void showAudioTuningPicker(final boolean transmit, final Button target) {
+        final String key = transmit ? "voiceTuning" : "listeningTuning";
+        String current = transmit ? p.voiceTuning() : p.listeningTuning();
+        int checked = AudioProfile.tuningIndex(current);
+        new AlertDialog.Builder(this)
+                .setTitle(transmit ? "发射语音调音模式" : "接收收听调音模式")
+                .setSingleChoiceItems(AudioProfile.TUNING_LABELS, checked, (dialog, which) -> {
+                    p.set(key, AudioProfile.TUNING_KEYS[which]);
+                    target.setText(AudioProfile.TUNING_LABELS[which]);
+                    applyAudioPrefs();
+                    dialog.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
  /** 扬声器 / 听筒 输出切换 */
@@ -1368,6 +1376,8 @@ public class MainActivity extends Activity implements FmoClient.Listener {
             e.setPadding(dp(12), dp(10), dp(12), dp(10));
             e.setMinHeight(dp(46));
         } else if (v instanceof SeekBar) {
+            v.setFocusable(true);
+            v.setFocusableInTouchMode(false);
             v.setPadding(0, dp(4), 0, dp(4));
         }
         r.addView(v);
@@ -1627,6 +1637,8 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         sw.setScaleX(0.90f);
         sw.setScaleY(0.90f);
         sw.setContentDescription(title);
+        sw.setFocusable(true);
+        sw.setFocusableInTouchMode(false);
         sw.setThumbTintList(new android.content.res.ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
                 new int[]{ACCENT, withAlpha(SUB, DARK ? 150 : 120)}));
@@ -3521,6 +3533,8 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         b.setSingleLine(true);
         b.setEllipsize(android.text.TextUtils.TruncateAt.END);
         b.setIncludeFontPadding(false);
+        b.setFocusable(true);
+        b.setFocusableInTouchMode(false);
         b.setTextColor(ACCENT);
         b.setTypeface(android.graphics.Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(stateBg(SURFACE2, withAlpha(ACCENT, DARK ? 40 : 26), 12));
@@ -3565,6 +3579,13 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         SeekBar s = new SeekBar(this);
         s.setMax(60);
         s.setProgress(progress0to40);
+        return s;
+    }
+
+    private SeekBar seekRange(int min, int max, int value) {
+        SeekBar s = new SeekBar(this);
+        s.setMax(Math.max(1, max - min));
+        s.setProgress(Math.max(0, Math.min(max - min, value - min)));
         return s;
     }
 
@@ -3685,13 +3706,15 @@ public class MainActivity extends Activity implements FmoClient.Listener {
 
         // ── 音频 ──
         LinearLayout ca = card();
-        ca.addView(sectionTitle("音频参数"));
+        ca.addView(sectionTitle("统一音频处理"));
+        ca.addView(tv("所有语音模式共用同一套收发 DSP，模式只负责编解码。", 10, SUB));
+
         final TextView rxVal = tv(gainText(p.rxGainDb()), 14, BLUE);
         final SeekBar rx = seek(p.rxGainDb() + 30);
         rx.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int pr, boolean fromUser) {
                 rxVal.setText(gainText(pr - 30));
-                if (fromUser && !p.agc()) { p.set("rxDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
+                if (fromUser) { p.set("rxDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
@@ -3699,12 +3722,33 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         ca.addView(row("接收音量", rxVal));
         ca.addView(rx);
 
+        final TextView rxAVal = tv(gainText(p.rxAgcTargetDb()), 14, BLUE);
+        final SeekBar rxA = seekRange(-12, 12, p.rxAgcTargetDb());
+        rxA.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int pr, boolean fromUser) {
+                rxAVal.setText(gainText(pr - 30));
+                if (fromUser) { p.set("rxAgcTargetDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        ca.addView(row("接收 AGC 调整", rxAVal));
+        ca.addView(rxA);
+        final Switch rxAgc = switchRow(ca, "接收 AGC", "0 为默认；正值更大，负值更小", p.rxAgc(),
+                (v, c) -> { p.set("rxAgc", c ? "1" : "0"); applyAudioPrefs(); });
+        switchRow(ca, "接收音量增强", "在统一增益基础上增加约 6 dB", p.rxVolumeBoost(),
+                (v, c) -> { p.set("rxVolumeBoost", c ? "1" : "0"); applyAudioPrefs(); });
+        switchRow(ca, "接收降噪", "抑制接收底噪和弱背景声", p.rxNoiseReduction(),
+                (v, c) -> { p.set("rxNoiseReduction", c ? "1" : "0"); applyAudioPrefs(); });
+        final Button listenTune = btn(AudioProfile.tuningLabel(p.listeningTuning()));
+        listenTune.setOnClickListener(v -> showAudioTuningPicker(false, listenTune));
+        ca.addView(row("收听调音模式", listenTune));
         final TextView txVal = tv(gainText(p.txGainDb()), 14, BLUE);
         final SeekBar tx = seek(p.txGainDb() + 30);
         tx.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int pr, boolean fromUser) {
                 txVal.setText(gainText(pr - 30));
-                if (fromUser && !p.agc()) { p.set("txDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
+                if (fromUser) { p.set("txDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
@@ -3712,29 +3756,55 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         ca.addView(row("发射音量", txVal));
         ca.addView(tx);
 
-        final Switch agc = switchRow(ca, "AGC 自动增益", "开启后自动控制，手动增益会禁用", p.agc(), null);
-        switchRow(ca, "降噪", "抑制背景杂音，默认关闭", p.denoise(),
-                (v, c) -> { p.set("denoise", c ? "1" : "0"); applyAudioPrefs(); });
+        final TextView txAVal = tv(gainText(p.txAgcTargetDb()), 14, BLUE);
+        final SeekBar txA = seekRange(-12, 12, p.txAgcTargetDb());
+        txA.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int pr, boolean fromUser) {
+                txAVal.setText(gainText(pr - 30));
+                if (fromUser) { p.set("txAgcTargetDb", String.valueOf(pr - 30)); applyAudioPrefs(); }
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        ca.addView(row("发射 AGC 调整", txAVal));
+        ca.addView(txA);
+        final Switch txAgc = switchRow(ca, "发射 AGC", "0 为默认；正值更大，负值更小", p.txAgc(),
+                (v, c) -> { p.set("txAgc", c ? "1" : "0"); applyAudioPrefs(); });
+        switchRow(ca, "发射降噪", "麦克风自适应降噪，默认开启", p.txNoiseReduction(),
+                (v, c) -> { p.set("txNoiseReduction", c ? "1" : "0"); applyAudioPrefs(); });
+        final Button voiceTune = btn(AudioProfile.tuningLabel(p.voiceTuning()));
+        voiceTune.setOnClickListener(v -> showAudioTuningPicker(true, voiceTune));
+        ca.addView(row("发射语音调音", voiceTune));
+
+        Button resetAudio = btn("恢复音频默认设置");
+        resetAudio.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("恢复音频默认设置")
+                .setMessage("恢复收发音量、AGC、降噪和调音模式到默认值。通信身份、频道和网络配置不会改变。")
+                .setPositiveButton("恢复", (dialog, which) -> {
+                    p.resetAudioDefaults();
+                    applyAudioPrefs();
+                    recreatePreservingScroll();
+                })
+                .setNegativeButton("取消", null)
+                .show());
+        ca.addView(resetAudio, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         switchRow(ca, "通话静音", "来电或有其它声音时自动静音", p.callMute(),
                 (v, c) -> { p.set("callMute", c ? "1" : "0"); updateMute(); });
         switchRow(ca, "发射提示音", "", p.pttTone(),
                 (v, c) -> p.set("pttTone", c ? "1" : "0"));
         final Runnable syncAudio = new Runnable() {
             @Override public void run() {
-                boolean on = p.agc();
-                rx.setEnabled(!on); tx.setEnabled(!on);
-                rxVal.setText(on ? "AGC 接管中" : gainText(p.rxGainDb()));
-                txVal.setText(on ? "AGC 接管中" : gainText(p.txGainDb()));
+                rxA.setEnabled(p.rxAgc());
+                txA.setEnabled(p.txAgc());
+                rxAVal.setText(gainText(p.rxAgcTargetDb()));
+                txAVal.setText(gainText(p.txAgcTargetDb()));
             }
         };
-        agc.setOnCheckedChangeListener((v, c) -> {
-            p.set("agc", c ? "1" : "0");
-            applyAudioPrefs();
-            syncAudio.run();
-        });
+        rxAgc.setOnCheckedChangeListener((v, c) -> syncAudio.run());
+        txAgc.setOnCheckedChangeListener((v, c) -> syncAudio.run());
         syncAudio.run();
-
-
         // ── 工作模式：2 列 tile 开关，不再是一整列 checkbox ──
         LinearLayout cm = card();
         cm.addView(sectionTitle("网络配置 · 工作模式"));
@@ -4906,10 +4976,19 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     }
 
     private void showYsfIdentityDialog() {
+        LinearLayout form = identityForm();
         EditText cs = identityField("YSF 呼号", p.ysfCallsign(), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-        new AlertDialog.Builder(this).setTitle("YSF 呼号").setView(cs).setPositiveButton("保存", (d, w) -> {
+        EditText dg = identityField("DG-ID（0=全部）", String.valueOf(p.ysfDgId()), InputType.TYPE_CLASS_NUMBER);
+        EditText options = identityField("反射器选项（YSFO，可空）", p.ysfOptions(), InputType.TYPE_CLASS_TEXT);
+        form.addView(row("YSF 呼号", cs));
+        form.addView(row("DG-ID", dg));
+        form.addView(row("反射器选项", options));
+        new AlertDialog.Builder(this).setTitle("YSF 身份与反射器").setView(form).setPositiveButton("保存", (d, w) -> {
             p.set("ysfCallsign", cs.getText().toString().trim().toUpperCase(java.util.Locale.US));
-            toast("YSF 呼号已保存");
+            try { p.setYsfDgId(Integer.parseInt(dg.getText().toString().trim())); } catch (Throwable ignored) { p.setYsfDgId(0); }
+            p.setYsfOptions(options.getText().toString());
+            updateYsfSelectors();
+            toast("YSF 身份与反射器参数已保存");
         }).setNegativeButton("取消", null).show();
     }
 
@@ -5086,10 +5165,9 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         final boolean pdcDstar = HyteraDeviceProfile.FAMILY_PDC.equals(HyteraDeviceProfile.detect().family);
         if (pdcDstar) HyteraAudioRoute.setTransmitting(this, true);
         AudioEngine.MicCb dstarMic = frame -> { if (txing && dstarDirect != null) dstarDirect.sendPcm(frame); };
-        if (pdcDstar)
-            audio.startDstarPdcMic(dstarMic);
-        else
-            audio.startDstarMic(dstarMic);
+        boolean dstarMicStarted = audio != null && (pdcDstar
+                ? audio.startDstarPdcMic(dstarMic) : audio.startDstarMic(dstarMic));
+        if (!dstarMicStarted) micStartFailed();
         if (audio != null) audio.muteSpk(true);
     }
     private void stopDstarPtt() {
@@ -5165,7 +5243,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     }
     private int ysfServerIndex(){return YsfServers.indexOf(p.get("ysfServer","CN-46002"));}
     private String ysfServerName(){return YsfServers.name(ysfServerIndex());}
-    private void updateYsfSelectors(){if(ysfServerBtn!=null)ysfServerBtn.setText(ysfServerName());if(ysfServerLine!=null)ysfServerLine.setText("YSF 反射器: "+ysfServerName());}
+    private void updateYsfSelectors(){if(ysfServerBtn!=null)ysfServerBtn.setText(ysfServerName());if(ysfServerLine!=null)ysfServerLine.setText("YSF 反射器: "+ysfServerName()+" · DG-ID "+p.ysfDgId());}
     private void showYsfServerPicker(){
         if(YsfServers.count()<=0){toast("YSF 服务器列表为空，请先更新服务器列表");return;}
         String[] labels=new String[YsfServers.count()];
@@ -5184,10 +5262,10 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         ysfConnecting = true;
         paintYsfConnectIcon();
         final int serverIndex = i;
-        log("YSF 连接: " + YsfServers.name(serverIndex) + " 呼号=" + call);
+        log("YSF 连接: " + YsfServers.name(serverIndex) + " 呼号=" + call + " DG-ID=" + p.ysfDgId());
         new Thread(() -> {
             try {
-                ysfDirect.connect(YsfServers.host(serverIndex), YsfServers.port(serverIndex), call);
+                ysfDirect.connect(YsfServers.host(serverIndex), YsfServers.port(serverIndex), call, p.ysfDgId(), p.ysfOptions());
             } catch (Throwable t) {
                 ysfConnecting = false;
                 log("YSF 连接失败: " + t);
@@ -5235,7 +5313,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         connectYsf();
     }
 
-    private void startYsfPtt(){if(!ysfActive()){toast("请先连接 YSF 反射器");return;}if(txing)return;txing=true;activePttTarget="ysf";txCallStart=System.currentTimeMillis();ysfDirect.startTx();pttToneStart();scheduleTxTimeout();if(ysfCallState!=null){ysfCallState.setText("发射中");ysfCallState.setTextColor(BLUE);}if(ysfCallLine!=null){ysfCallLine.setText(p.ysfCallsign());ysfCallLine.setTextColor(TXT);}ui.post(this::paintNav);audio.startYsfMic(frame->{if(txing&&ysfDirect!=null)ysfDirect.sendPcm(frame);});}
+    private void startYsfPtt(){if(!ysfActive()){toast("请先连接 YSF 反射器");return;}if(txing)return;txing=true;activePttTarget="ysf";txCallStart=System.currentTimeMillis();ysfDirect.startTx();pttToneStart();scheduleTxTimeout();if(ysfCallState!=null){ysfCallState.setText("发射中");ysfCallState.setTextColor(BLUE);}if(ysfCallLine!=null){ysfCallLine.setText(p.ysfCallsign());ysfCallLine.setTextColor(TXT);}ui.post(this::paintNav);if(!audio.startYsfMic(frame->{if(txing&&ysfDirect!=null)ysfDirect.sendPcm(frame);})) micStartFailed();}
     private void stopYsfPtt(){try{if(audio!=null)audio.startMic(null);}catch(Throwable ignored){}if(ysfDirect!=null)ysfDirect.stopTx();int sec=txCallStart==0?0:(int)((System.currentTimeMillis()-txCallStart)/1000);if(sec==0&&txing)sec=1;if(txing)addYsfLog("发射",p.ysfCallsign(),sec);txing=false;activePttTarget=null;txCallStart=0;pttToneStop();cancelTxTimeout();if(ysfCallState!=null){ysfCallState.setText("空闲");ysfCallState.setTextColor(SUB);}if(ysfCallLine!=null){ysfCallLine.setText("等待呼叫");ysfCallLine.setTextColor(TXT);}ui.post(this::paintNav);}
     private View buildYsfPage(){
         LinearLayout l=wrap();
@@ -6573,11 +6651,11 @@ public class MainActivity extends Activity implements FmoClient.Listener {
             pttToneStart();
             scheduleTxTimeout();
             nowState.setText("模拟互联发射中"); nowCall.setText(p.callsign());
-            audio.startFmoMic(frame -> {
+            if (!audio.startFmoMic(frame -> {
                 if (!(txing && fmo != null)) return;
                 // 与参考 APP 一致：采集后直接送 Opus，不做额外放大/限幅
                 fmo.sendPcm(frame);
-            }, p.fmoEnhance());
+            }, p.fmoEnhance())) micStartFailed();
             return;
         }
         boolean wantBm = "bm".equals(target);
@@ -6608,7 +6686,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
             if (bmCallLine != null) { bmCallLine.setText(p.bmCallsign()); bmCallLine.setTextColor(TXT); }
         }
         ui.post(this::paintNav);
-        audio.startMic(frame -> {
+        if (!audio.startMic(frame -> {
             if (!txing || voc == null) return;
             byte[] a9 = new byte[9];
             synchronized (voc) { if (!voc.encode(frame, a9)) return; }
@@ -6627,7 +6705,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
                 final int sec = txBursts * 3 / 50;
                 ui.post(() -> nowTimer.setText("0:" + (sec < 10 ? "0" : "") + sec));
             }
-        });
+        })) micStartFailed();
     }
 
     private void scheduleTxTimeout() {
@@ -6677,6 +6755,11 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         PttTone.stop();
     }
 
+
+    private void micStartFailed() {
+        toast("麦克风启动失败，请检查录音权限或麦克风是否被占用");
+        try { pttUp(); } catch (Throwable ignored) {}
+    }
 
     private void pttUp() {
         cancelHardwarePttRetry();
@@ -8155,7 +8238,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
     private void registerOverlayReceiver() {
         overlayPttReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context context, Intent intent) {
-                String action = intent == null ? "" : intent.getAction();
+                String action = intent == null ? null : intent.getAction();
                 if (ArchOverlayPttService.ACTION_DOWN.equals(action)) externalPttDown();
                 else if (ArchOverlayPttService.ACTION_UP.equals(action)) externalPttUp();
             }
@@ -8164,11 +8247,15 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         filter.addAction(ArchOverlayPttService.ACTION_DOWN);
         filter.addAction(ArchOverlayPttService.ACTION_UP);
         try {
-            if (android.os.Build.VERSION.SDK_INT >= 33)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(overlayPttReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-            else
-                registerReceiver(overlayPttReceiver, filter);
-        } catch (Throwable t) { log("悬浮PTT接收器注册失败: " + t); }
+            } else {
+                // 7.0-12L: sender must hold our signature-level permission.
+                registerReceiver(overlayPttReceiver, filter, INTERNAL_PTT_PERMISSION, null);
+            }
+        } catch (Throwable t) {
+            log("内部 PTT 接收器注册失败: " + t);
+        }
     }
 
     private void requestOverlayPtt() {
@@ -8364,6 +8451,8 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         try { shutdownRuntime(); } catch (Throwable ignored) {}
         try { stopOverlayPtt(); } catch (Throwable ignored) {}
         try { stopService(new Intent(this, ArchKeepAliveService.class)); } catch (Throwable ignored) {}
+        try { if (overlayPttReceiver != null) unregisterReceiver(overlayPttReceiver); } catch (Throwable ignored) {}
+        overlayPttReceiver = null;
         try { HyteraPdc760Bridge.setListener(null); } catch (Throwable ignored) {}
         try { detachHardwarePttActivity(this); } catch (Throwable ignored) {}
         try { finishAndRemoveTask(); } catch (Throwable ignored) {}
@@ -8383,7 +8472,6 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         // 和重建后的新客户端用同一个 MQTT client id 互踢 —— 表现就是反复断开重连。
         try { ui.removeCallbacksAndMessages(null); } catch (Throwable ignored) {}
         cancelHardwarePttRetry();
-        try { if (overlayPttReceiver != null) unregisterReceiver(overlayPttReceiver); } catch (Throwable ignored) {}
         try { HyteraPdc760Bridge.setListener(null); } catch (Throwable ignored) {}
         if (aprs != null) aprs.stop();
         fmoWanted = false;
@@ -8473,9 +8561,10 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         int serverIndex=p25ServerIndex();
         p25Connecting=true; paintP25ConnectIcon();
         final int si=serverIndex;
-        log("P25 连接: "+P25Servers.name(si)+" 呼号="+call+" ID="+sourceId);
+        final int destinationId=P25Servers.designator(si);
+        log("P25 连接: "+P25Servers.name(si)+" 呼号="+call+" ID="+sourceId+" TG="+destinationId);
         new Thread(()->{
-            try{ p25Direct.connect(P25Servers.host(si),P25Servers.port(si),call,sourceId,0); }
+            try{ p25Direct.connect(P25Servers.host(si),P25Servers.port(si),call,sourceId,destinationId); }
             catch(Throwable t){ p25Connecting=false; log("P25 连接失败: "+t); toast("P25 连接失败: "+t); }
         },"p25-connect").start();
     }
@@ -8515,7 +8604,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         if(p25CallState!=null){p25CallState.setText("发射中");p25CallState.setTextColor(BLUE);}
         if(p25CallLine!=null){p25CallLine.setText(p.p25Callsign());p25CallLine.setTextColor(TXT);}
         ui.post(this::paintNav);
-        audio.startYsfMic(frame->{if(txing&&p25Direct!=null)p25Direct.sendPcm(frame);});
+        if(!audio.startYsfMic(frame->{if(txing&&p25Direct!=null)p25Direct.sendPcm(frame);})) micStartFailed();
     }
     private void stopP25Ptt(){
         try{if(audio!=null)audio.startMic(null);}catch(Throwable ignored){}
@@ -8696,7 +8785,7 @@ public class MainActivity extends Activity implements FmoClient.Listener {
         if(nxdnCallState!=null){nxdnCallState.setText("发射中");nxdnCallState.setTextColor(BLUE);}
         if(nxdnCallLine!=null){nxdnCallLine.setText(p.nxdnCallsign());nxdnCallLine.setTextColor(TXT);}
         ui.post(this::paintNav);
-        audio.startYsfMic(frame->{if(txing&&nxdnDirect!=null)nxdnDirect.sendPcm(frame);});
+        if(!audio.startYsfMic(frame->{if(txing&&nxdnDirect!=null)nxdnDirect.sendPcm(frame);})) micStartFailed();
     }
     private void stopNxdnPtt(){
         try{if(audio!=null)audio.startMic(null);}catch(Throwable ignored){}

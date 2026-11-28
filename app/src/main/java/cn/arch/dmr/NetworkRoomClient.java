@@ -1030,11 +1030,7 @@ public final class NetworkRoomClient {
 
     /** Release stale transport state before starting or accepting a reconnect. */
     private String stableDeviceId() {
-        try {
-            String id = android.provider.Settings.Secure.getString(context.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
-            if (id != null && !id.trim().isEmpty()) return "arch-" + id.trim();
-        } catch (Throwable ignored) {}
-        return "arch-device-" + Integer.toHexString(System.identityHashCode(context));
+        return new Prefs(context).stableDeviceId();
     }
 
     private void cleanupDeadConnection() {

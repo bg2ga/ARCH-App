@@ -37,6 +37,7 @@ final class HqAudio {
     private volatile boolean externalPacing = false;
     private final DigitalAgc rxAgc = new DigitalAgc();
     private final DigitalAgc txAgc = new DigitalAgc();
+    private final VoiceDsp voiceDsp = new VoiceDsp();
     private final LinkedBlockingQueue<short[]> queue = new LinkedBlockingQueue<>(20);
     private final LinkedBlockingQueue<short[]> prestartQueue = new LinkedBlockingQueue<>(12);
     private volatile long lastPlayWriteAt;
@@ -46,6 +47,7 @@ final class HqAudio {
     /** Start only the receive player. It is kept alive for the whole room session. */
     synchronized boolean startPlayback() {
         if (playRun && trk != null && playThread != null && playThread.isAlive()) return true;
+        voiceDsp.resetRx();
         discardStalePlayback();
         droppedRxFrames = 0;
 
@@ -124,9 +126,7 @@ final class HqAudio {
                             }
                             fadeInSamples -= apply;
                         }
-                        float g = rxGain;
-                        if (g != 1f) applyGain(f, g);
-                        if (agcEnabled) rxAgc.process(f);
+                        voiceDsp.processRx(f, playbackSampleRate);
                         AudioLevelBus.pushRx(f);
                         if (!playRun || trk != track) break;
                         if (!writePlaybackFrame(track, f)) break;
@@ -205,6 +205,7 @@ final class HqAudio {
             rec = record;
             micCb = cb;
             micRun = true;
+            voiceDsp.resetTx();
             lastMicFrameAt = System.currentTimeMillis();
             micThread = new Thread(() -> {
                 short[] chunk = new short[recordFrameSamples];
@@ -230,9 +231,7 @@ final class HqAudio {
                                 offset += copy;
                                 if (fill != frame.length) continue;
                                 short[] txFrame = resampleFrame(frame, recordSampleRate, playbackSampleRate);
-                                float g = txGain;
-                                if (g != 1f) applyGain(txFrame, g);
-                                if (agcEnabled) txAgc.process(txFrame);
+                                voiceDsp.processTx(txFrame, playbackSampleRate);
                                 AudioLevelBus.pushTx(txFrame);
                                 MicCb callback = micCb;
                                 if (callback != null) callback.onFrame(txFrame.clone());
@@ -317,9 +316,7 @@ final class HqAudio {
             }
             directFadeRemaining -= apply;
         }
-        float gain = rxGain;
-        if (gain != 1f) applyGain(frame, gain);
-        if (agcEnabled) rxAgc.process(frame);
+        voiceDsp.processRx(frame, playbackSampleRate);
         AudioLevelBus.pushRx(frame);
         if (writePlaybackFrame(track, frame)) lastPlayWriteAt = System.currentTimeMillis();
         else {
@@ -357,6 +354,7 @@ final class HqAudio {
         }
     }
 
+    void setAudioProfile(AudioProfile profile) { voiceDsp.setProfile(profile); }
     void setRxGain(float gain) { rxGain = Math.max(0.03f, Math.min(8f, gain)); }
     void setTxGain(float gain) { txGain = Math.max(0.03f, Math.min(8f, gain)); }
     void setExternalPacing(boolean on) { externalPacing = on; }

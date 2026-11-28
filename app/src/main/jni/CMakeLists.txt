@@ -32,6 +32,17 @@ target_include_directories(archdstar PRIVATE
 target_compile_options(archdstar PRIVATE -O3)
 target_link_libraries(archdstar ${BLIP25} log m)
 
+# Legacy YSF JNI library used by YsfCodec. Keep it separate from the main
+# D-Star library so rebuilding YSF cannot change D-Star ABI or behavior.
+add_library(archdstar_legacy SHARED ${YSF_SOURCES} ${DSTAR_SOURCES})
+target_include_directories(archdstar_legacy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/mbe
+    ${CMAKE_CURRENT_SOURCE_DIR}/dstar/imbe_vocoder
+    ${CMAKE_CURRENT_SOURCE_DIR}/ysf)
+target_compile_options(archdstar_legacy PRIVATE -O3)
+target_link_libraries(archdstar_legacy ${BLIP25} log m)
+
 add_library(archpcm SHARED
     pcm_frontend_jni.c
     speexdsp/libspeexdsp/resample.c

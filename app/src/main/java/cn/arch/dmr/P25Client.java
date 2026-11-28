@@ -55,6 +55,7 @@ public final class P25Client {
     private volatile int port=41000;
     private volatile String callsign="";
     private volatile int srcId=0, dstId=0;
+    private volatile boolean connected;
     private volatile boolean running, tx, rxEnded;
     private volatile int txStep=0;
     private volatile Thread rxThread, pingThread, playbackThread;
@@ -63,12 +64,13 @@ public final class P25Client {
 
     public void setListener(Listener l) { listener=l; }
     public boolean isRunning() { return running && socket!=null; }
+    public boolean isConnected() { return connected && isRunning(); }
     public boolean isTx() { return tx; }
     public boolean codecOk() { return codec.ok(); }
 
     public boolean connect(String host,int port,String call,int sourceId,int destId) {
         stop();
-        this.port=port; this.callsign=normalize(call); this.srcId=sourceId; this.dstId=destId;
+        this.port=port; this.callsign=normalize(call); this.srcId=sourceId; this.dstId=destId; this.connected=false;
         if(this.callsign.isEmpty()) { state(STATE_ERROR,"P25 呼号为空"); return false; }
         if(!codec.ok()) { state(STATE_ERROR,"P25 声码器加载失败"); return false; }
         try {
@@ -81,8 +83,7 @@ public final class P25Client {
             pingThread=new Thread(this::pingLoop,"p25-ping");
             playbackThread=new Thread(this::playbackLoop,"p25-playback");
             rxThread.start(); pingThread.start(); playbackThread.start();
-            state(STATE_CONNECTED,"已连接 P25 "+host+":"+port);
-            log("P25 直连 "+host+":"+port);
+            log("P25 已发送登录请求，等待反射器 Poll 应答 "+host+":"+port);
             return true;
         } catch(Throwable t) {
             closeSocket(); state(STATE_ERROR,String.valueOf(t.getMessage()==null?t:t.getMessage()));
@@ -152,6 +153,14 @@ public final class P25Client {
 
     private void handleRx(byte[] b,int len) {
         int cmd=b[0]&0xFF;
+        if(cmd==0xF0 && len==11) {
+            if(!connected) {
+                connected=true;
+                state(STATE_CONNECTED,"已连接 P25");
+                log("P25 Poll 应答，反射器登录成功");
+            }
+            return;
+        }
         if(cmd==0x80) {
             synchronized(rxLock) { rxEnded=true; }
             return;
@@ -206,7 +215,8 @@ public final class P25Client {
     }
 
     public void stop() {
-        running=false; tx=false;
+        if(running && socket!=null) send(controlPacket((byte)0xF1));
+        running=false; tx=false; connected=false;
         Thread a=rxThread,b=pingThread,c=playbackThread; rxThread=pingThread=playbackThread=null;
         if(a!=null) a.interrupt(); if(b!=null) b.interrupt(); if(c!=null) c.interrupt();
         closeSocket();

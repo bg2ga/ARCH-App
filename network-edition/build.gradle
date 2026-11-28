@@ -1,0 +1,17 @@
+buildscript {
+    repositories {
+        maven { url "https://maven.aliyun.com/repository/google" }
+        maven { url "https://maven.aliyun.com/repository/public" }
+        maven { url "https://jitpack.io" }
+        google(); mavenCentral()
+    }
+    dependencies { classpath 'com.android.tools.build:gradle:8.5.2' }
+}
+allprojects {
+    repositories {
+        maven { url "https://maven.aliyun.com/repository/google" }
+        maven { url "https://maven.aliyun.com/repository/public" }
+        maven { url "https://jitpack.io" }
+        google(); mavenCentral()
+    }
+}

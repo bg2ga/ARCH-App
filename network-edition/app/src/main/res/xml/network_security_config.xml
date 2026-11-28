@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+    <!-- 网络收音机目录中的公开音频流，只有媒体数据，不含账号凭据。 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">lhttp.qtfm.cn</domain>
+    </domain-config>
+</network-security-config>

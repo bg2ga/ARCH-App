@@ -19,7 +19,7 @@ extern void md380_decode_fec(const uint8_t *ambe72, int16_t *pcm160);
 extern void md380_encode_fec(uint8_t *ambe72, const int16_t *pcm160);
 
 JNIEXPORT jshortArray JNICALL
-Java_com_z3_dmr_net_vocoder_Md380Vocoder_nativeDecodeFec9(
+Java_cn_arch_dmr_vocoder_Md380Vocoder_nativeDecodeFec9(
         JNIEnv *env, jclass clazz, jbyteArray input) {
     (void)clazz;
     if (input == NULL || (*env)->GetArrayLength(env, input) != 9) return NULL;
@@ -40,7 +40,7 @@ Java_com_z3_dmr_net_vocoder_Md380Vocoder_nativeDecodeFec9(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_z3_dmr_net_vocoder_Md380Vocoder_nativeEncodeFec9(
+Java_cn_arch_dmr_vocoder_Md380Vocoder_nativeEncodeFec9(
         JNIEnv *env, jclass clazz, jshortArray input) {
     (void)clazz;
     if (input == NULL || (*env)->GetArrayLength(env, input) != 160) return NULL;

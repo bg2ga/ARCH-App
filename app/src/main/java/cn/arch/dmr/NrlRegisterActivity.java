@@ -34,6 +34,8 @@ import okhttp3.Response;
 
 /** Server-side NRL account registration, matching the official NRL /user/reg/create form. */
 public class NrlRegisterActivity extends Activity {
+    private static final int MAX_LICENSE_BYTES = 10 * 1024 * 1024;
+    private static final int MAX_RESPONSE_BYTES = 256 * 1024;
     private Prefs p;
     private NrlServers.Server server;
     private EditText callsign, name, phone, password, address, email;
@@ -177,13 +179,37 @@ public class NrlRegisterActivity extends Activity {
     }
 
     private byte[] readBytes(Uri uri) throws Exception {
-        InputStream in = getContentResolver().openInputStream(uri);
-        if (in == null) return null;
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] b = new byte[8192]; int n;
-        while ((n = in.read(b)) > 0) out.write(b, 0, n);
-        in.close();
-        return out.toByteArray();
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) return null;
+            byte[] b = new byte[8192];
+            int n;
+            long total = 0;
+            while ((n = in.read(b)) > 0) {
+                total += n;
+                if (total > MAX_LICENSE_BYTES) throw new IllegalArgumentException("照片不能超过 10 MB");
+                out.write(b, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private static String readResponse(Response r) throws Exception {
+        if (r == null || r.body() == null) return "";
+        if (r.body().contentLength() > MAX_RESPONSE_BYTES)
+            throw new IllegalArgumentException("服务器响应过大");
+        try (InputStream in = r.body().byteStream();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] b = new byte[8192];
+            int n;
+            long total = 0;
+            while ((n = in.read(b)) > 0) {
+                total += n;
+                if (total > MAX_RESPONSE_BYTES) throw new IllegalArgumentException("服务器响应过大");
+                out.write(b, 0, n);
+            }
+            return out.toString("UTF-8");
+        }
     }
 
     private void doSubmit(String cs, String nm, String ph, String pw, String ad, String em, byte[] image) {
@@ -198,14 +224,20 @@ public class NrlRegisterActivity extends Activity {
                 .addFormDataPart("license", "license.jpg", RequestBody.create(image, media))
                 .build();
         String lastError = "服务器无响应";
-        for (String base : apiBases()) {
+        List<String> bases = apiBases();
+        if (bases.isEmpty()) {
+            ui("", false, "已拒绝明文 HTTP 注册：当前 NRL 服务器没有可用的 HTTPS 地址，请联系管理员配置 HTTPS");
+            return;
+        }
+        for (String base : bases) {
             try {
                 OkHttpClient c = new OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build();
+                        .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
+                        .followRedirects(false).followSslRedirects(false).build();
                 Request req = new Request.Builder().url(base + "/user/reg/create").post(body).build();
-                Response r = c.newCall(req).execute();
-                String text = r.body() == null ? "" : r.body().string();
-                int code = r.code();
+                try (Response r = c.newCall(req).execute()) {
+                    String text = readResponse(r);
+                    int code = r.code();
                 if (code >= 200 && code < 300) {
                     int business = 0; String err = "";
                     try { org.json.JSONObject j = new org.json.JSONObject(text); business = j.optInt("code", 0); err = j.optString("error", ""); } catch (Throwable ignored) {}
@@ -219,8 +251,9 @@ public class NrlRegisterActivity extends Activity {
                         return;
                     }
                     lastError = err.isEmpty() ? text : err;
-                } else if (code != 404) {
-                    lastError = "HTTP " + code + (text.isEmpty() ? "" : " · " + text);
+                    } else if (code != 404) {
+                        lastError = "HTTP " + code + (text.isEmpty() ? "" : " · " + text);
+                    }
                 }
             } catch (Throwable t) { lastError = t.getMessage() == null ? t.toString() : t.getMessage(); }
         }
@@ -230,16 +263,29 @@ public class NrlRegisterActivity extends Activity {
     private List<String> apiBases() {
         ArrayList<String> out = new ArrayList<>();
         String h = server.host.trim();
-        if (h.startsWith("http://") || h.startsWith("https://")) {
-            out.add(h.replaceAll("/+$", ""));
+        if (h.startsWith("http://")) return out; // never send identity/license data in cleartext
+        if (h.startsWith("https://")) {
+            String base = h.replaceAll("/+$", "");
+            if (isHttpsBase(base)) out.add(base);
         } else if (h.matches(".*:[0-9]+$")) {
-            out.add("https://" + h);
-            out.add("http://" + h);
+            String base = "https://" + h;
+            if (isHttpsBase(base)) out.add(base);
         } else {
-            out.add("https://" + h + ":443");
-            out.add("http://" + h + ":9000");
+            String base = "https://" + h + ":443";
+            if (isHttpsBase(base)) out.add(base);
         }
         return out;
+    }
+
+    private static boolean isHttpsBase(String base) {
+        try {
+            URI u = new URI(base);
+            return "https".equalsIgnoreCase(u.getScheme())
+                    && u.getHost() != null
+                    && u.getUserInfo() == null;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private void ui(String ignored, boolean ok, String msg) {

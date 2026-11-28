@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=2,user-scalable=yes">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html,body,#map{height:100%;width:100%;margin:0;padding:0;background:#eef3f8}
+    body{font-family:sans-serif;color:#172033}
+    #status b{color:#075985}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#e11d48;margin-right:5px}
+    .leaflet-control-attribution{font-size:10px!important}
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  var station='__STATION__';
+  var map=L.map('map',{zoomControl:true,attributionControl:true}).setView([45.75,126.65],11);
+  window.__archPan=function(dx,dy){map.panBy([dx,dy],{animate:true,duration:0.15});};
+  window.__archZoom=function(direction){if(direction>0){map.zoomIn();}else if(direction<0){map.zoomOut();}};
+  var tiles=L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',{
+    subdomains:['1','2','3','4'],maxZoom:18,attribution:'高德地图'
+  }).addTo(map);
+  var layer=L.layerGroup().addTo(map);
+  var hasFitted=false;
+  var timer=null;
+  function setStatus(text){/* Map stays unobstructed. */}
+  function load(){
+    var xhr=new XMLHttpRequest();
+    xhr.timeout=20000;
+    xhr.open('POST','https://aprs.tv/api/v2/h',true);
+    xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+    xhr.onreadystatechange=function(){
+      if(xhr.readyState!==4)return;
+      if(xhr.status<200||xhr.status>=300){setStatus('<b>读取失败</b> · '+xhr.status);return;}
+      try{
+        var root=JSON.parse(xhr.responseText);
+        var rows=(root&&root.data)||[];
+        var points=[];
+        for(var i=Math.max(0,rows.length-600);i<rows.length;i++){
+          var r=rows[i]||{}; var lat=parseFloat(r.lat),lon=parseFloat(r.lon);
+          if(isFinite(lat)&&isFinite(lon)&&lat>=-90&&lat<=90&&lon>=-180&&lon<=180){points.push([lat,lon,r.tm||'']);}
+        }
+        layer.clearLayers();
+        if(!points.length){setStatus('<b>'+station+'</b> · 暂无可显示定位');return;}
+        var last=points[points.length-1];
+        if(points.length>1){L.polyline(points.map(function(p){return [p[0],p[1]];}),{color:'#0ea5e9',weight:4,opacity:.75}).addTo(layer);}
+        var marker=L.circleMarker([last[0],last[1]],{radius:8,color:'#ffffff',weight:3,fillColor:'#e11d48',fillOpacity:1}).addTo(layer)
+          .bindPopup('<b>'+station+'</b><br>'+last[2]);
+        // Fit only the first successful load. Periodic refreshes must not
+        // undo the user's cursor-driven pan and zoom.
+        if(!hasFitted){
+          marker.openPopup();
+          map.fitBounds(L.latLngBounds(points.map(function(p){return [p[0],p[1]];})).pad(0.18),{maxZoom:14});
+          hasFitted=true;
+        }
+        setStatus('<b>'+station+'</b> · '+points.length+' 个定位点 · '+(last[2]||''));
+      }catch(e){setStatus('<b>地图数据解析失败</b>');}
+    };
+    xhr.ontimeout=function(){setStatus('<b>读取超时</b> · 稍后自动重试');};
+    xhr.onerror=function(){setStatus('<b>地图数据连接失败</b> · 稍后自动重试');};
+    xhr.send('call='+encodeURIComponent(station));
+  }
+  if(window.L){load();timer=setInterval(load,30000);}else{setStatus('<b>地图组件加载失败</b>');}
+})();
+</script>
+</body>
+</html>

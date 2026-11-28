@@ -11,7 +11,7 @@
 - Android 签名密钥或密码
 - API Token、私钥、VPN/WireGuard 配置
 - 用户账号导出、对讲凭据或设备转储
-- 本地生成的 APK/AAB
-- `local.properties` 或 `keystore.properties`
+- 本地生成的 APK/AAB/idsig
+- `local.properties`、`keystore.properties` 或编辑器备份
 
 如果发现凭据曾被提交，应先撤销或轮换凭据，再清理 Git 历史。

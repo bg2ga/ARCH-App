@@ -1,7 +1,7 @@
 package cn.arch.dmr;
 
 import android.content.Context;
-import com.z3.dmr.net.vocoder.Md380Vocoder;
+import cn.arch.dmr.vocoder.Md380Vocoder;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;

@@ -85,14 +85,14 @@ public class ArchOverlayPttService extends Service {
                 dragging = false; downMs = System.currentTimeMillis();
                 downRawX = (int)e.getRawX(); downRawY = (int)e.getRawY();
                 startX = lp.x; startY = lp.y;
-                send(ACTION_DOWN); setButtonColor(true);
+                send(true); setButtonColor(true);
                 return true;
             }
             if (e.getAction() == MotionEvent.ACTION_MOVE) {
                 int dx = (int)e.getRawX() - downRawX;
                 int dy = (int)e.getRawY() - downRawY;
                 if (!dragging && (Math.abs(dx) > dp(8) || Math.abs(dy) > dp(8))) {
-                    dragging = true; send(ACTION_UP); setButtonColor(false);
+                    dragging = true; send(false); setButtonColor(false);
                 }
                 if (dragging) {
                     lp.x = startX + dx; lp.y = startY + dy;
@@ -101,7 +101,7 @@ public class ArchOverlayPttService extends Service {
                 return true;
             }
             if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
-                if (!dragging) { send(ACTION_UP); v.performClick(); }
+                if (!dragging) { send(false); v.performClick(); }
                 setButtonColor(false);
                 return true;
             }
@@ -149,9 +149,13 @@ public class ArchOverlayPttService extends Service {
         return "数字中继";
     }
 
-    private void send(String action) {
-        Intent i = new Intent(action).setPackage(getPackageName());
-        sendBroadcast(i);
+    private boolean send(boolean down) {
+        try {
+            return MainActivity.dispatchHardwarePtt(down);
+        } catch (Throwable t) {
+            android.util.Log.w("ARCH", "悬浮 PTT 直接投递失败: " + t);
+            return false;
+        }
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {

@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
-import android.net.Uri;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,32 +15,40 @@ import android.provider.Settings;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 在线升级：检查 arch-version.json → 下载 APK → 校验 SHA-256 → 交给系统安装器。 */
+/** 在线升级：检查版本清单 -> 校验 HTTPS/哈希/签名 -> 下载 -> 交给系统安装器。 */
 public class Updater {
-
-    /** 版本清单地址：协会版和公开版各自独立更新。 */
     public static final String VERSION_URL = BuildConfig.UPDATE_VERSION_URL;
     public static final String FALLBACK_VERSION_URL = BuildConfig.UPDATE_FALLBACK_URL;
     private static final String UA = "ARCH-Android";
+    private static final String EXPECTED_SIGNER_SHA256 =
+            "f442665a4a9c89c36ba8027aaa85063e839932a2d5dd47e90d0d69c911d52a97";
+    private static final long MAX_MANIFEST_BYTES = 256L * 1024L;
+    private static final long MAX_APK_BYTES = 200L * 1024L * 1024L;
+    private static final long MIN_APK_BYTES = 1024L * 1024L;
 
     private final Activity a;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    /** 同一次运行里只提示一次自动检查结果，避免每次回前台都弹 */
     private static boolean autoChecked;
+    private static File pendingInstall;
+    private volatile HttpURLConnection activeDownloadConnection;
 
     public Updater(Activity a) { this.a = a; }
-
-    private static File pendingInstall;
 
     public static void resumePendingInstall(Activity a) {
         File apk = pendingInstall;
@@ -50,102 +60,185 @@ public class Updater {
 
     public interface Cb { void onDone(String msg); }
 
-    /** @param silent true=启动时自动检查（无更新不提示）；false=用户手动点“检查更新” */
+    private static final class UpdateInfo {
+        final int versionCode;
+        final String versionName;
+        final String apkUrl;
+        final String sha256;
+        final long size;
+        final String notes;
+
+        UpdateInfo(int versionCode, String versionName, String apkUrl, String sha256,
+                   long size, String notes) {
+            this.versionCode = versionCode;
+            this.versionName = versionName;
+            this.apkUrl = apkUrl;
+            this.sha256 = sha256;
+            this.size = size;
+            this.notes = notes;
+        }
+    }
+
     public void check(final boolean silent, final Cb cb) {
         if (silent && autoChecked) return;
         if (silent) autoChecked = true;
         new Thread(() -> {
+            UpdateInfo info = null;
             String err = null;
-            JsonObject j = null;
-            try { j = fetchJson(); }
-            catch (Exception e) { err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
-            final JsonObject fj = j;
+            try { info = parseManifest(fetchJson()); }
+            catch (Throwable e) { err = safeMessage(e); }
+            final UpdateInfo fi = info;
             final String ferr = err;
             ui.post(() -> {
-                if (cb != null) cb.onDone(fj != null ? "ok" : ("失败: " + ferr));
-                if (fj == null) {
-                    if (!silent) toast("检查更新失败：" + ferr);
-                    return;
-                }
-                int code = fj.has("versionCode") ? fj.get("versionCode").getAsInt() : 0;
-                String name = fj.has("versionName") ? fj.get("versionName").getAsString() : String.valueOf(code);
-                String url = fj.has("apkUrl") ? fj.get("apkUrl").getAsString() : "";
-                String sha = fj.has("sha256") ? fj.get("sha256").getAsString() : "";
-                long expectedSize = fj.has("size") ? fj.get("size").getAsLong() : -1L;
-                String notes = fj.has("notes") ? fj.get("notes").getAsString() : "";
-                if (code <= BuildConfig.VERSION_CODE) {
-                    if (!silent) toast("当前已是最新版本 " + BuildConfig.VERSION_NAME);
-                    return;
-                }
-                if (url.isEmpty()) { if (!silent) toast("最新版本缺少下载地址"); return; }
-                final String fu = url, fs = sha, fn = notes; final long fsize = expectedSize; final int fcode = code;
-                String msg = "当前版本：" + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）\n"
-                        + "最新版本：" + name + "（" + code + "）\n";
-                if (fn != null && fn.length() > 0) msg += "\n更新内容：\n" + fn + "\n";
-                msg += "\n是否现在下载并安装？";
-                if (a.isFinishing() || (Build.VERSION.SDK_INT >= 17 && a.isDestroyed())) return;
                 try {
+                    if (cb != null) cb.onDone(fi != null ? "ok" : ("失败: " + ferr));
+                    if (fi == null) {
+                        if (!silent) toast("检查更新失败：" + ferr);
+                        return;
+                    }
+                    if (fi.versionCode <= BuildConfig.VERSION_CODE) {
+                        if (!silent) toast("当前已是最新版本 " + BuildConfig.VERSION_NAME);
+                        return;
+                    }
+                    if (a.isFinishing() || (Build.VERSION.SDK_INT >= 17 && a.isDestroyed())) return;
+                    StringBuilder msg = new StringBuilder()
+                            .append("当前版本：").append(BuildConfig.VERSION_NAME)
+                            .append("（").append(BuildConfig.VERSION_CODE).append("）\n")
+                            .append("最新版本：").append(fi.versionName)
+                            .append("（").append(fi.versionCode).append("）\n");
+                    if (!fi.notes.isEmpty()) msg.append("\n更新内容：\n").append(fi.notes).append('\n');
+                    msg.append("\n是否现在下载并安装？");
                     new AlertDialog.Builder(a)
-                            .setTitle("发现新版本 " + name)
-                            .setMessage(msg)
+                            .setTitle("发现新版本 " + fi.versionName)
+                            .setMessage(msg.toString())
                             .setNegativeButton("以后再说", null)
-                            .setPositiveButton("下载并安装", (d, w) -> download(fu, fs, fsize, fcode))
+                            .setPositiveButton("下载并安装", (d, w) -> download(fi))
                             .show();
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    android.util.Log.e("ARCH-UPDATE", "check UI failed", t);
+                }
             });
         }, "arch-update-check").start();
     }
 
     private JsonObject fetchJson() throws Exception {
-        try {
-            return fetchJson(VERSION_URL);
-        } catch (Exception primary) {
-            try {
-                return fetchJson(FALLBACK_VERSION_URL);
-            } catch (Exception fallback) {
+        try { return fetchJson(VERSION_URL); }
+        catch (Exception primary) {
+            try { return fetchJson(FALLBACK_VERSION_URL); }
+            catch (Exception fallback) {
                 fallback.addSuppressed(primary);
                 throw fallback;
             }
         }
     }
 
-    private JsonObject fetchJson(String baseUrl) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(baseUrl + (baseUrl.contains("?") ? "&" : "?") + "t=" + System.currentTimeMillis()).openConnection();
-        c.setConnectTimeout(10000);
-        c.setReadTimeout(15000);
-        c.setUseCaches(false);
-        c.setRequestProperty("Accept-Encoding", "identity");
-        c.setRequestProperty("Cache-Control", "no-cache");
-        c.setRequestProperty("Pragma", "no-cache");
-        c.setRequestProperty("User-Agent", UA);
-        c.setInstanceFollowRedirects(true);
+    private JsonObject fetchJson(String url) throws Exception {
+        if (!isAllowedHttpsUrl(url)) throw new SecurityException("更新清单地址不安全");
+        HttpURLConnection c = openValidated(url);
         try {
-            if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
-            try (InputStream in = c.getInputStream();
-                 java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            if (c.getResponseCode() != HttpURLConnection.HTTP_OK)
+                throw new Exception("HTTP " + c.getResponseCode());
+            try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] b = new byte[4096];
                 int n;
-                while ((n = in.read(b)) > 0) out.write(b, 0, n);
-                return JsonParser.parseString(out.toString("UTF-8")).getAsJsonObject();
+                long total = 0;
+                while ((n = in.read(b)) > 0) {
+                    total += n;
+                    if (total > MAX_MANIFEST_BYTES) throw new Exception("更新清单过大");
+                    out.write(b, 0, n);
+                }
+                JsonElement root = JsonParser.parseString(out.toString(StandardCharsets.UTF_8.name()));
+                if (root == null || !root.isJsonObject()) throw new Exception("更新清单格式错误");
+                return root.getAsJsonObject();
             }
         } finally { c.disconnect(); }
     }
 
-    private void download(final String url, final String expectSha, final long expectedSize, final int expectedVersionCode) {
-        File dir;
-        if (Build.VERSION.SDK_INT < 24) {
-            File downloads = android.os.Environment.getExternalStoragePublicDirectory(
-                    android.os.Environment.DIRECTORY_DOWNLOADS);
-            dir = new File(downloads, "ARCHUpdate");
-        } else {
-            dir = new File(a.getCacheDir(), "upgrade");
-        }
-        if (!dir.exists() && !dir.mkdirs()) { toast("无法创建下载目录"); return; }
-        String candidateName = url.substring(url.lastIndexOf('/') + 1);
-        if (!candidateName.toLowerCase(java.util.Locale.US).endsWith(".apk")) candidateName = "ARCH-update.apk";
-        final String name = candidateName;
-        final File out = new File(dir, name);
+    private UpdateInfo parseManifest(JsonObject j) throws Exception {
+        if (j == null) throw new Exception("更新清单为空");
+        long code = requiredNumber(j, "versionCode");
+        if (code < 1 || code > Integer.MAX_VALUE) throw new Exception("versionCode 非法");
+        String name = requiredString(j, "versionName");
+        String url = requiredString(j, "apkUrl");
+        String sha = requiredString(j, "sha256");
+        long size = requiredNumber(j, "size");
+        String notes = optionalString(j, "notes", "");
+        if (name.length() > 80) throw new Exception("versionName 过长");
+        if (notes.length() > 4000) notes = notes.substring(0, 4000);
+        if (!isAllowedHttpsUrl(url)) throw new Exception("apkUrl 必须是受信任的 HTTPS 地址");
+        if (!sha.matches("[0-9a-fA-F]{64}")) throw new Exception("sha256 非法");
+        if (size < MIN_APK_BYTES || size > MAX_APK_BYTES) throw new Exception("安装包大小非法");
+        return new UpdateInfo((int) code, name, url, sha.toLowerCase(Locale.US), size, notes);
+    }
 
+    private static String requiredString(JsonObject j, String key) throws Exception {
+        JsonElement e = j.get(key);
+        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString())
+            throw new Exception("更新清单缺少字符串字段: " + key);
+        return e.getAsString();
+    }
+
+    private static String optionalString(JsonObject j, String key, String def) throws Exception {
+        JsonElement e = j.get(key);
+        if (e == null || e.isJsonNull()) return def;
+        if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString())
+            throw new Exception("更新清单字段类型错误: " + key);
+        return e.getAsString();
+    }
+
+    private static long requiredNumber(JsonObject j, String key) throws Exception {
+        JsonElement e = j.get(key);
+        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber())
+            throw new Exception("更新清单缺少数字字段: " + key);
+        try { return e.getAsLong(); }
+        catch (Throwable t) { throw new Exception("更新清单数字字段非法: " + key); }
+    }
+
+    private static boolean isAllowedHttpsUrl(String raw) {
+        try {
+            Uri u = Uri.parse(raw == null ? "" : raw);
+            if (!"https".equalsIgnoreCase(u.getScheme()) || u.getHost() == null
+                    || (u.getUserInfo() != null && !u.getUserInfo().isEmpty())) return false;
+            String host = u.getHost().toLowerCase(Locale.US);
+            return "hljrsa.cn".equals(host) || "arch-overseas.pages.dev".equals(host);
+        } catch (Throwable ignored) { return false; }
+    }
+
+    private static HttpURLConnection openValidated(String url) throws Exception {
+        String current = url;
+        for (int i = 0; i < 4; i++) {
+            if (!isAllowedHttpsUrl(current)) throw new SecurityException("更新地址跳转到不可信域名");
+            HttpURLConnection c = (HttpURLConnection) new URL(current).openConnection();
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(60000);
+            c.setUseCaches(false);
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("Cache-Control", "no-cache");
+            c.setRequestProperty("Pragma", "no-cache");
+            c.setRequestProperty("User-Agent", UA);
+            int code = c.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String location = c.getHeaderField("Location");
+                c.disconnect();
+                if (location == null || location.length() == 0) throw new Exception("更新跳转缺少地址");
+                current = new URL(new URL(current), location).toString();
+                continue;
+            }
+            return c;
+        }
+        throw new Exception("更新跳转次数过多");
+    }
+
+    private void download(final UpdateInfo info) {
+        File dir = new File(a.getCacheDir(), "upgrade");
+        if (!dir.exists() && !dir.mkdirs()) { toast("无法创建下载目录"); return; }
+        final File part = new File(dir, "ARCH-update-" + info.versionCode + ".apk.part");
+        final File out = new File(dir, "ARCH-update-" + info.versionCode + ".apk");
+        deleteQuietly(part);
+        deleteQuietly(out);
+
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
         final TextView tv = new TextView(a);
         tv.setPadding(48, 40, 48, 40);
         tv.setTextSize(15);
@@ -154,75 +247,126 @@ public class Updater {
                 .setTitle("正在下载新版本")
                 .setView(tv)
                 .setCancelable(false)
-                .setNegativeButton("取消", (d, w) -> {})
+                .setNegativeButton("取消", (d, w) -> {
+                    cancelled.set(true);
+                    HttpURLConnection c = activeDownloadConnection;
+                    if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+                })
                 .create();
-        dlg.show();
+        try { dlg.show(); } catch (Throwable t) { toast("无法打开下载窗口"); return; }
 
         new Thread(() -> {
             String err = null;
             try {
-                String digest;
-                digest = downloadFile(url, out, expectedSize, tv);
-                if (expectedSize > 0) ui.post(() -> tv.setText("正在下载… 100%"));
-                if (expectSha != null && expectSha.length() == 64
-                        && !digest.equalsIgnoreCase(expectSha)) {
-                    out.delete();
+                String digest = downloadFile(info.apkUrl, info.size, part, tv, cancelled);
+                if (cancelled.get()) throw new InterruptedException("已取消下载");
+                if (!digest.equalsIgnoreCase(info.sha256))
                     throw new Exception("安装包校验失败（SHA-256 不一致）");
-                }
-                PackageInfo pi = a.getPackageManager().getPackageArchiveInfo(out.getAbsolutePath(), 0);
-                if (pi == null || !a.getPackageName().equals(pi.packageName)
-                        || pi.versionCode != expectedVersionCode
-                        || pi.versionCode <= BuildConfig.VERSION_CODE) {
-                    out.delete();
-                    throw new Exception("安装包版本不匹配，已拒绝安装");
-                }
-            } catch (Exception e) {
-                err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                verifyApk(part, info);
+                if (cancelled.get()) throw new InterruptedException("已取消下载");
+                if (out.exists() && !out.delete()) throw new Exception("无法替换旧安装包");
+                if (!part.renameTo(out)) throw new Exception("无法保存安装包");
+            } catch (Throwable e) {
+                err = cancelled.get() ? "已取消下载" : safeMessage(e);
+            } finally {
+                activeDownloadConnection = null;
+                if (err != null) deleteQuietly(part);
             }
             final String ferr = err;
             ui.post(() -> {
-                if (dlg.isShowing()) dlg.dismiss();
-                if (ferr != null) { toast("下载失败：" + ferr); return; }
-                install(out);
+                try {
+                    if (dlg.isShowing()) dlg.dismiss();
+                    if (ferr != null) { toast(ferr); return; }
+                    if (cancelled.get()) return;
+                    install(out);
+                } catch (Throwable t) {
+                    android.util.Log.e("ARCH-UPDATE", "download UI failed", t);
+                }
             });
         }, "arch-update-dl").start();
     }
 
-    private String downloadFile(String source, File out, long expectedSize, TextView tv) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(source).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(60000);
-        c.setRequestProperty("Accept-Encoding", "identity");
-        c.setRequestProperty("User-Agent", UA);
-        c.setInstanceFollowRedirects(true);
+    private String downloadFile(String source, long expectedSize, File out,
+                                TextView tv, AtomicBoolean cancelled) throws Exception {
+        if (!isAllowedHttpsUrl(source)) throw new SecurityException("安装包地址不安全");
+        HttpURLConnection c = openValidated(source);
+        activeDownloadConnection = c;
         try {
-            if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
-            long total = expectedSize > 0 ? expectedSize : c.getContentLength();
+            if (c.getResponseCode() != HttpURLConnection.HTTP_OK)
+                throw new Exception("HTTP " + c.getResponseCode());
+            long contentLength = c.getContentLengthLong();
+            if (contentLength > MAX_APK_BYTES) throw new Exception("安装包过大");
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             try (InputStream in = c.getInputStream(); FileOutputStream fo = new FileOutputStream(out)) {
                 byte[] b = new byte[65536];
-                int n; long got = 0; long last = 0;
+                int n;
+                long got = 0;
+                long last = 0;
                 while ((n = in.read(b)) > 0) {
+                    if (cancelled.get()) throw new InterruptedException("已取消下载");
+                    got += n;
+                    if (got > MAX_APK_BYTES || got > expectedSize)
+                        throw new Exception("安装包超过清单声明大小");
                     fo.write(b, 0, n);
                     md.update(b, 0, n);
-                    got += n;
                     long now = System.currentTimeMillis();
                     if (now - last > 250) {
                         last = now;
-                        final int pct = total > 0 ? (int) (got * 100 / total) : -1;
+                        final int pct = (int) Math.min(100L, got * 100L / expectedSize);
                         final long fg = got;
-                        ui.post(() -> tv.setText(pct >= 0
-                                ? "正在下载… " + pct + "%"
-                                : "正在下载… " + (fg / 1024) + " KB"));
+                        ui.post(() -> tv.setText("正在下载… " + pct + "%  (" + (fg / 1024) + " KB)"));
                     }
                 }
             }
-            if (expectedSize > 0 && out.length() != expectedSize)
+            if (cancelled.get()) throw new InterruptedException("已取消下载");
+            if (out.length() != expectedSize)
                 throw new Exception("下载不完整：收到 " + out.length() + " / " + expectedSize + " 字节");
             StringBuilder hex = new StringBuilder();
-            for (byte x : md.digest()) hex.append(String.format(java.util.Locale.US, "%02x", x));
+            for (byte x : md.digest()) hex.append(String.format(Locale.US, "%02x", x));
             return hex.toString();
-        } finally { c.disconnect(); }
+        } finally {
+            activeDownloadConnection = null;
+            c.disconnect();
+        }
+    }
+
+    private void verifyApk(File apk, UpdateInfo info) throws Exception {
+        if (apk == null || !apk.isFile() || apk.length() != info.size)
+            throw new Exception("安装包文件不完整");
+        int flags = Build.VERSION.SDK_INT >= 28
+                ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+        PackageInfo pi = a.getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), flags);
+        if (pi == null || !a.getPackageName().equals(pi.packageName)
+                || pi.versionCode != info.versionCode || pi.versionCode <= BuildConfig.VERSION_CODE) {
+            throw new Exception("安装包版本或包名不匹配，已拒绝安装");
+        }
+        if (!hasExpectedSigner(pi)) throw new Exception("安装包签名不匹配，已拒绝安装");
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean hasExpectedSigner(PackageInfo pi) {
+        if (pi == null) return false;
+        if (Build.VERSION.SDK_INT >= 28 && pi.signingInfo != null) {
+            // Accept the current signer, or the pinned certificate in the v3
+            // rotation history (useful for a future signed key rotation).
+            if (containsExpectedSigner(pi.signingInfo.getApkContentsSigners())) return true;
+            return containsExpectedSigner(pi.signingInfo.getSigningCertificateHistory());
+        }
+        return containsExpectedSigner(pi.signatures);
+    }
+
+    private static boolean containsExpectedSigner(Signature[] signatures) {
+        if (signatures == null || signatures.length == 0) return false;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            for (Signature signature : signatures) {
+                byte[] digest = md.digest(signature.toByteArray());
+                StringBuilder hex = new StringBuilder();
+                for (byte x : digest) hex.append(String.format(Locale.US, "%02x", x));
+                if (EXPECTED_SIGNER_SHA256.equalsIgnoreCase(hex.toString())) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     private void install(File apk) {
@@ -234,13 +378,10 @@ public class Updater {
                             ? "请先允许 ARCH 安装应用，返回后会自动继续安装。"
                             : "请先允许安装未知来源应用，返回后会自动继续安装。")
                     .setPositiveButton("去设置", (d, w) -> openInstallPermissionSettings(a))
-                    .setNegativeButton("取消", null)
+                    .setNegativeButton("取消", (d, w) -> pendingInstall = null)
                     .show();
             return;
         }
-        // Android 7 vendor firmware is inconsistent when third-party apps use
-        // PackageInstaller sessions; several return Permission Denied asynchronously.
-        // The system package installer is the compatible primary path on all devices.
         if (openSystemInstaller(a, apk)) {
             toast("下载已完成，正在打开安装器");
             return;
@@ -254,15 +395,11 @@ public class Updater {
 
     static boolean canInstallPackages(Context context) {
         if (context == null) return false;
-        if (Build.VERSION.SDK_INT >= 26) {
-            return context.getPackageManager().canRequestPackageInstalls();
-        }
+        if (Build.VERSION.SDK_INT >= 26) return context.getPackageManager().canRequestPackageInstalls();
         try {
             return Settings.Secure.getInt(context.getContentResolver(),
                     Settings.Secure.INSTALL_NON_MARKET_APPS, 1) == 1;
-        } catch (Throwable ignored) {
-            return true;
-        }
+        } catch (Throwable ignored) { return true; }
     }
 
     static void openInstallPermissionSettings(Context context) {
@@ -285,20 +422,12 @@ public class Updater {
     static boolean openSystemInstaller(Context context, File apk) {
         if (context == null || apk == null || !apk.isFile()) return false;
         try {
-            Uri uri;
-            if (Build.VERSION.SDK_INT < 24) {
-                try { apk.setReadable(true, false); } catch (Throwable ignored) {}
-                uri = Uri.fromFile(apk);
-            } else {
-                uri = Uri.parse("content://" + ApkProvider.AUTHORITY + "/" + apk.getName());
-            }
+            Uri uri = Uri.parse("content://" + ApkProvider.AUTHORITY + "/" + apk.getName());
             Intent primary = new Intent(Intent.ACTION_VIEW)
                     .setDataAndType(uri, "application/vnd.android.package-archive")
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             if (!(context instanceof Activity)) primary.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            if ("content".equals(uri.getScheme())) {
-                primary.setClipData(android.content.ClipData.newRawUri("", uri));
-            }
+            primary.setClipData(android.content.ClipData.newRawUri("", uri));
             try {
                 context.startActivity(primary);
                 return true;
@@ -309,9 +438,7 @@ public class Updater {
                     .setDataAndType(uri, "application/vnd.android.package-archive")
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             if (!(context instanceof Activity)) fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            if ("content".equals(uri.getScheme())) {
-                fallback.setClipData(android.content.ClipData.newRawUri("", uri));
-            }
+            fallback.setClipData(android.content.ClipData.newRawUri("", uri));
             context.startActivity(fallback);
             return true;
         } catch (Exception e) {
@@ -321,17 +448,17 @@ public class Updater {
     }
 
     private boolean installViaPackageSession(File apk) {
-        android.content.pm.PackageInstaller installer = null;
         android.content.pm.PackageInstaller.Session session = null;
         try {
-            installer = a.getPackageManager().getPackageInstaller();
+            android.content.pm.PackageInstaller installer =
+                    a.getPackageManager().getPackageInstaller();
             android.content.pm.PackageInstaller.SessionParams params =
                     new android.content.pm.PackageInstaller.SessionParams(
                             android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL);
             params.setSize(apk.length());
             int sessionId = installer.createSession(params);
             session = installer.openSession(sessionId);
-            try (java.io.FileInputStream in = new java.io.FileInputStream(apk);
+            try (FileInputStream in = new FileInputStream(apk);
                  java.io.OutputStream out = session.openWrite("base.apk", 0, apk.length())) {
                 byte[] buf = new byte[65536];
                 int n;
@@ -343,9 +470,9 @@ public class Updater {
                     .putExtra(InstallResultReceiver.EXTRA_APK_PATH, apk.getAbsolutePath());
             int piFlags = android.app.PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= 31) piFlags |= android.app.PendingIntent.FLAG_MUTABLE;
-            android.app.PendingIntent pending = android.app.PendingIntent.getBroadcast(a, sessionId, result, piFlags);
+            android.app.PendingIntent pending =
+                    android.app.PendingIntent.getBroadcast(a, sessionId, result, piFlags);
             session.commit(pending.getIntentSender());
-            android.util.Log.i("ARCH-UPDATE", "package session committed id=" + sessionId);
             return true;
         } catch (Throwable t) {
             android.util.Log.e("ARCH-UPDATE", "package session failed: " + t);
@@ -353,6 +480,16 @@ public class Updater {
         } finally {
             if (session != null) try { session.close(); } catch (Throwable ignored) {}
         }
+    }
+
+    private static void deleteQuietly(File f) {
+        if (f != null && f.exists()) try { f.delete(); } catch (Throwable ignored) {}
+    }
+
+    private static String safeMessage(Throwable e) {
+        if (e == null) return "未知错误";
+        String m = e.getMessage();
+        return m == null || m.trim().isEmpty() ? e.getClass().getSimpleName() : m;
     }
 
     private void toast(String s) {

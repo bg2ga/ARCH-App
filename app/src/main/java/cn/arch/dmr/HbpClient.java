@@ -272,7 +272,7 @@ public class HbpClient {
         System.arraycopy(pad("000", 3), 0, c, p, 3); p += 3;
         System.arraycopy(pad("", 20), 0, c, p, 20); p += 20;
         System.arraycopy(pad("", 19), 0, c, p, 19); p += 19;
-        // Match MMDVMHost/Z3 for a non-duplex hotspot. In this protocol the
+        // Match MMDVMHost for a non-duplex hotspot. In this protocol the
         // value is an MMDVMHost capability byte, not a general "declare
         // simplex" command; BrandMeister also derives DMO from equal RX/TX.
         c[p++] = (byte)'4';
@@ -462,7 +462,7 @@ public class HbpClient {
     /** Set the target used by the next DMR burst without changing RPTO. */
     public void setTxTarget(int tg) { if (tg > 0) dstId = tg; }
 
-    /** Send one group-call voice LC header, matching Z3 auto-static key-up. */
+    /** Send one group-call voice LC header, matching standard auto-static key-up. */
     public boolean txHeaderTo(int target) {
         if (state != 2 || target <= 0) return false;
         new Random().nextBytes(streamId);

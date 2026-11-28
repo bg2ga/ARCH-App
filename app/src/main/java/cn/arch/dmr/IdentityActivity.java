@@ -30,7 +30,6 @@ import java.util.Locale;
 /** 统一身份设置与注册界面。 */
 public class IdentityActivity extends Activity {
     private static final String ACCOUNT_API = "https://hljrsa.cn:50113/api/account/";
-    private static final String ACCOUNT_API_LEGACY = "http://hljrsa.cn:50110/api/account/";
     private static final String ACCOUNT_API_OVERSEAS = "https://arch-overseas.pages.dev/api/account/";
 
     private Prefs p;
@@ -431,7 +430,7 @@ public class IdentityActivity extends Activity {
     private JSONObject postJson(String operation, JSONObject body) throws Exception {
         String[] bases = BuildConfig.OVERSEAS_EDITION
                 ? new String[]{ACCOUNT_API_OVERSEAS}
-                : new String[]{ACCOUNT_API, ACCOUNT_API_LEGACY};
+                : new String[]{ACCOUNT_API};
         Exception last = null;
         for (int i = 0; i < bases.length; i++) {
             try {

@@ -30,6 +30,8 @@ public final class YsfClient {
     private volatile InetAddress address;
     private volatile int port=42000;
     private volatile String callsign="";
+    private volatile int dgId=0;
+    private volatile String options="";
     private volatile boolean running, tx;
     private volatile int txFrameNo, txPcmLen;
     private volatile Thread rxThread, pingThread, playbackThread;
@@ -43,8 +45,22 @@ public final class YsfClient {
     public boolean codecOk(){ return codec.ok(); }
 
     public boolean connect(String host,int port,String call){
+        return connect(host,port,call,0,"");
+    }
+
+    public boolean connect(String host,int port,String call,int dgId){
+        return connect(host,port,call,dgId,"");
+    }
+
+    public boolean connect(String host,int port,String call,int dgId,String options){
         stop();
         this.port=port; this.callsign=normalize(call);
+        this.dgId=Math.max(0,Math.min(127,dgId));
+        String opt=options==null?"":options.trim();
+        // pYSF3/YCS use the first YSFO field as the target DG-ID.  If the
+        // user set a DG-ID but left options blank, carry it automatically.
+        if(opt.isEmpty() && this.dgId>0) opt=this.dgId+";";
+        this.options=opt.length()>36?opt.substring(0,36):opt;
         if(this.callsign.isEmpty()){ state(STATE_ERROR,"YSF 呼号为空"); return false; }
         if(!codec.ok()){ state(STATE_ERROR,"YSF 声码器加载失败"); return false; }
         try{
@@ -52,7 +68,10 @@ public final class YsfClient {
             DatagramSocket s=new DatagramSocket(); s.setSoTimeout(3000); socket=s;
             state(STATE_CONNECTING,"正在连接 YSF "+host+":"+port);
             byte[] hello=packet(callsign);
-            s.send(new DatagramPacket(hello,hello.length,address,port));
+            // G4KLX YSFGateway sends several initial polls before accepting
+            // the link; some reflectors ignore a single short-lived poll.
+            for(int i=0;i<3;i++) s.send(new DatagramPacket(hello,hello.length,address,port));
+            if(!this.options.isEmpty()){byte[] op=optionsPacket(callsign,this.options);s.send(new DatagramPacket(op,op.length,address,port));}
             byte[] reply=new byte[64]; DatagramPacket p=new DatagramPacket(reply,reply.length); s.receive(p);
             String r=new String(reply,0,p.getLength(),StandardCharsets.US_ASCII);
             if(!r.startsWith("YSFPREFLECTOR")) throw new IllegalStateException("YSF 反射器无响应: "+r.trim());
@@ -61,24 +80,23 @@ public final class YsfClient {
             pingThread=new Thread(this::pingLoop,"ysf-ping");
             playbackThread=new Thread(this::playbackLoop,"ysf-playback");
             rxThread.start(); pingThread.start(); playbackThread.start();
-            state(STATE_CONNECTED,"已连接 YSF "+host+":"+port); log("YSF 直连 "+host+":"+port);
+            state(STATE_CONNECTED,"已连接 YSF "+host+":"+port); log("YSF 直连 "+host+":"+port+" DG-ID="+this.dgId+(this.options.isEmpty()?"":" options="+this.options));
             return true;
         }catch(Throwable t){ closeSocket(); state(STATE_ERROR,String.valueOf(t.getMessage()==null?t:t.getMessage())); return false; }
     }
-
     public void startTx(){
         if(!isRunning()||tx) return;
-        synchronized(txLock){ txPcmLen=0; txFrameNo=0; }
+        synchronized(txLock){ txPcmLen=0; txFrameNo=1; } // header consumed count 0; first voice must be FN 0
         synchronized(rxLock){ rxPcmQueue.clear(); }
         tx=true;
         byte[] h=new byte[155];
-        if(codec.encodeHeader(h,pad10(callsign),0,false)) send(h);
+        if(codec.encodeHeader(h,pad10(callsign),0,false,dgId)) send(h);
         log("YSF 开始发射");
     }
 
     public void stopTx(){
         boolean was=tx; tx=false;
-        if(was&&isRunning()){byte[] h=new byte[155];codec.encodeHeader(h,pad10(callsign),txFrameNo,true);send(h);}
+        if(was&&isRunning()){byte[] h=new byte[155];codec.encodeHeader(h,pad10(callsign),txFrameNo,true,dgId);send(h);}
         synchronized(txLock){txPcmLen=0;}
         log("YSF 停止发射");
     }
@@ -91,7 +109,7 @@ public final class YsfClient {
             txPcmLen+=160;
             if(txPcmLen==800){
                 out=new byte[155];
-                if(codec.encodeVoice(out,pad10(callsign),txPcm800,txFrameNo)){ txFrameNo++; }
+                if(codec.encodeVoice(out,pad10(callsign),txPcm800,txFrameNo,dgId)){ txFrameNo++; }
                 else out=null;
                 txPcmLen=0;
             }
@@ -100,7 +118,7 @@ public final class YsfClient {
     }
 
     private void pingLoop(){
-        while(running){try{Thread.sleep(5000L);}catch(InterruptedException e){return;} if(running)send(packet(callsign));}
+        while(running){try{Thread.sleep(1000L);}catch(InterruptedException e){return;} if(running)sendPoll();}
     }
 
     private void rxLoop(){
@@ -161,12 +179,37 @@ public final class YsfClient {
         rxStart=0;lastRx=0;rxCall="";
     }
 
-    public void stop(){running=false;tx=false;Thread a=rxThread,b=pingThread,c=playbackThread;rxThread=pingThread=playbackThread=null;if(a!=null)a.interrupt();if(b!=null)b.interrupt();if(c!=null)c.interrupt();closeSocket();synchronized(rxLock){rxPcmQueue.clear();}state(STATE_DISCONNECTED,"已断开");}
+    public void stop(){if(running&&socket!=null&&!callsign.isEmpty())send(unlinkPacket(callsign));running=false;tx=false;Thread a=rxThread,b=pingThread,c=playbackThread;rxThread=pingThread=playbackThread=null;if(a!=null)a.interrupt();if(b!=null)b.interrupt();if(c!=null)c.interrupt();closeSocket();synchronized(rxLock){rxPcmQueue.clear();}state(STATE_DISCONNECTED,"已断开");}
     private void closeSocket(){DatagramSocket s=socket;socket=null;if(s!=null)try{s.close();}catch(Throwable ignored){}}
     private void send(byte[] b){try{DatagramSocket s=socket;if(s!=null&&address!=null)s.send(new DatagramPacket(b,b.length,address,port));}catch(Throwable t){log("YSF 发送失败: "+t);}}
-    private static byte[] packet(String call){String c=call.length()>10?call.substring(0,10):call;byte[] o=new byte[14];byte[] h="YSFP".getBytes(StandardCharsets.US_ASCII);System.arraycopy(h,0,o,0,4);byte[] b=c.getBytes(StandardCharsets.US_ASCII);int n=Math.min(10,b.length);System.arraycopy(b,0,o,4,n);for(int i=4+n;i<14;i++)o[i]=' ';return o;}
+    private void sendPoll(){
+        if(!running) return;
+        send(packet(callsign));
+        if(!options.isEmpty()) send(optionsPacket(callsign,options));
+    }
+
+    private static byte[] packet(String call){ return headerPacket("YSFP",call,0,""); }
+    private static byte[] unlinkPacket(String call){ return headerPacket("YSFU",call,0,""); }
+    private static byte[] optionsPacket(String call,String text){ return headerPacket("YSFO",call,36,text); }
+    private static byte[] headerPacket(String tag,String call,int extra,String text){
+        String c=call.length()>10?call.substring(0,10):call;
+        byte[] o=new byte[14+extra];
+        byte[] h=tag.getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(h,0,o,0,4);
+        byte[] b=c.getBytes(StandardCharsets.US_ASCII);
+        int n=Math.min(10,b.length);
+        System.arraycopy(b,0,o,4,n);
+        for(int i=4+n;i<14;i++)o[i]=(byte)' ';
+        if(extra>0){
+            byte[] x=text==null?new byte[0]:text.getBytes(StandardCharsets.UTF_8);
+            int m=Math.min(extra,x.length);
+            System.arraycopy(x,0,o,14,m);
+            for(int i=14+m;i<o.length;i++)o[i]=(byte)' ';
+        }
+        return o;
+    }
     private static byte[] pad10(String call){byte[] o=new byte[10];java.util.Arrays.fill(o,(byte)' ');byte[] b=normalize(call).getBytes(StandardCharsets.US_ASCII);System.arraycopy(b,0,o,0,Math.min(10,b.length));return o;}
-    private static String normalize(String s){return s==null?"":s.trim().toUpperCase(Locale.US).replaceAll("[^A-Z0-9/]","");}
+    private static String normalize(String s){return s==null?"":s.trim().toUpperCase(Locale.US).replaceAll("[^A-Z0-9/-]","");}
     private static String trim(byte[] b){return new String(b,StandardCharsets.US_ASCII).trim();}
     private void state(int s,String m){Listener l=listener;if(l!=null)l.onState(s,m);}
     private void log(String s){Listener l=listener;if(l!=null)l.onLog(s);}

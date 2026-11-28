@@ -124,7 +124,7 @@ public final class ArchPttBroadcast {
             String line = raw == null ? "" : raw.trim();
             int p = line.indexOf('|');
             if (p <= 0 || p >= line.length() - 1) continue;
-            String type = line.substring(0, p).trim().toUpperCase();
+            String type = line.substring(0, p).trim().toUpperCase(java.util.Locale.US);
             String value = line.substring(p + 1).trim();
             if (!action.equals(value)) continue;
             if (TYPE_DOWN.equals(type) || TYPE_UP.equals(type) || TYPE_TOGGLE.equals(type)) return type;

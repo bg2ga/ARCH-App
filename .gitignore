@@ -1,5 +1,6 @@
 # Gradle and Android build output
 .gradle/
+**/.gradle/
 **/build/
 **/.cxx/
 **/.externalNativeBuild/
@@ -7,7 +8,9 @@
 .idea/
 *.iml
 local.properties
+**/local.properties
 keystore.properties
+**/keystore.properties
 captures/
 dist/
 
@@ -18,10 +21,16 @@ dist/
 *.pfx
 *.apk
 *.aab
+*.apk.idsig
+*.idsig
 
-# Logs and editor backups
+# Logs, editor backups and patch snapshots
 *.log
+*.bak
 *.bak-*
+*.before
 *.before-*
+*.orig
+*.rej
 .DS_Store
 Thumbs.db
